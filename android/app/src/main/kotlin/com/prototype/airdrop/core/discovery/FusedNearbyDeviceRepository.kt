@@ -1,11 +1,13 @@
 package com.prototype.airdrop.core.discovery
 
 import android.content.Context
+import android.util.Log
 import com.prototype.airdrop.core.connectivity.NsdServiceDiscoverer
 import com.prototype.airdrop.core.connectivity.WifiNetworkSnapshot
 import com.prototype.airdrop.core.connectivity.ble.BlePcScanner
 import com.prototype.airdrop.core.model.NearbyDevice
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -31,7 +33,11 @@ class FusedNearbyDeviceRepository(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val refreshMutex = Mutex()
+    private val coalesceMutex = Mutex()
     private var periodicJob: Job? = null
+    private var inFlightRefresh: Deferred<Unit>? = null
+
+    private var lastRefreshCompletedAtMs: Long = 0L
 
     private val _devices = MutableStateFlow<List<NearbyDevice>>(emptyList())
     override val devices: StateFlow<List<NearbyDevice>> = _devices.asStateFlow()
@@ -53,12 +59,41 @@ class FusedNearbyDeviceRepository(
 
     val deviceUsageStore: DeviceUsageStore get() = usageStore
 
+    fun hasCachedDevices(): Boolean = _rankedDevices.value.isNotEmpty()
+
+    fun hasFreshCache(maxAgeMs: Long = 10_000L): Boolean =
+        hasCachedDevices() &&
+            (System.currentTimeMillis() - lastRefreshCompletedAtMs) <= maxAgeMs
+
+    fun ensureBleContinuousScanIfNeeded() {
+        bleScanner.startContinuousScan()
+    }
+
     override suspend fun refresh() {
-        refreshInternal(fullBleScan = true)
+        coalescedRefresh(fullBleScan = true)
     }
 
     suspend fun refreshQuick() {
-        refreshInternal(fullBleScan = false)
+        coalescedRefresh(fullBleScan = false)
+    }
+
+    private suspend fun coalescedRefresh(fullBleScan: Boolean) {
+        val deferred = coalesceMutex.withLock {
+            inFlightRefresh?.takeIf { it.isActive }?.also {
+                Log.d(TAG, "refresh coalesced fullBleScan=$fullBleScan")
+            } ?: scope.async {
+                refreshInternal(fullBleScan)
+            }.also { inFlightRefresh = it }
+        }
+        try {
+            deferred.await()
+        } finally {
+            coalesceMutex.withLock {
+                if (inFlightRefresh === deferred && deferred.isCompleted) {
+                    inFlightRefresh = null
+                }
+            }
+        }
     }
 
     fun startPeriodicRefresh(intervalMs: Long = 2_000L) {
@@ -80,22 +115,38 @@ class FusedNearbyDeviceRepository(
 
     private suspend fun refreshInternal(fullBleScan: Boolean) {
         refreshMutex.withLock {
-            _isLoading.value = true
+            val showBlockingLoad = _rankedDevices.value.isEmpty()
+            if (showBlockingLoad) {
+                _isLoading.value = true
+            }
             _errorMessage.value = null
+
+            val startedAt = System.currentTimeMillis()
+            Log.d(
+                TAG,
+                "refresh start fullBleScan=$fullBleScan blocking=$showBlockingLoad " +
+                    "cachedDevices=${_rankedDevices.value.size}"
+            )
+
             try {
                 WifiNetworkSnapshot.logAvailability(appContext)
                 val phoneBssid = WifiNetworkSnapshot.currentBssid(appContext)
                 _phoneBssid.value = phoneBssid
-                val bleResults = if (fullBleScan && periodicJob?.isActive != true) {
-                    bleScanner.scanOnce(timeoutMs = 8_000L)
-                } else {
-                    if (fullBleScan) delay(2_000L)
-                    bleScanner.getCachedResults()
-                }
 
-                val mdnsResults = coroutineScope {
-                    val mdnsDeferred = async { nsdDiscoverer.discoverAllPcs(timeoutMs = if (fullBleScan) 8_000L else 1_500L) }
-                    mdnsDeferred.await()
+                val mdnsTimeoutMs = if (fullBleScan) 8_000L else 1_500L
+                val (bleResults, mdnsResults) = coroutineScope {
+                    val bleDeferred = async {
+                        if (fullBleScan && periodicJob?.isActive != true) {
+                            bleScanner.scanOnce(timeoutMs = 8_000L)
+                        } else {
+                            if (fullBleScan) delay(2_000L)
+                            bleScanner.getCachedResults()
+                        }
+                    }
+                    val mdnsDeferred = async {
+                        nsdDiscoverer.discoverAllPcs(timeoutMs = mdnsTimeoutMs)
+                    }
+                    bleDeferred.await() to mdnsDeferred.await()
                 }
 
                 val merged = DiscoveryMerger.merge(bleResults, mdnsResults)
@@ -104,6 +155,7 @@ class FusedNearbyDeviceRepository(
                 val deviceList = scored.map { it.first }
                 _devices.value = deviceList
                 _rankedDevices.value = DeviceRanking.rank(deviceList, usageStore)
+                lastRefreshCompletedAtMs = System.currentTimeMillis()
 
                 if (_devices.value.isEmpty()) {
                     _errorMessage.value = when {
@@ -115,8 +167,17 @@ class FusedNearbyDeviceRepository(
                             "No nearby PCs passed proximity filter"
                     }
                 }
+
+                val elapsedMs = System.currentTimeMillis() - startedAt
+                Log.d(
+                    TAG,
+                    "refresh end fullBleScan=$fullBleScan elapsedMs=$elapsedMs " +
+                        "devices=${deviceList.size} ble=${bleResults.size} mdns=${mdnsResults.size}"
+                )
             } finally {
-                _isLoading.value = false
+                if (showBlockingLoad) {
+                    _isLoading.value = false
+                }
             }
         }
     }
@@ -128,5 +189,9 @@ class FusedNearbyDeviceRepository(
         stopPeriodicRefresh()
         bleScanner.stopScan()
         nsdDiscoverer.stopDiscovery()
+    }
+
+    companion object {
+        private const val TAG = "SpaceDropDiscovery"
     }
 }

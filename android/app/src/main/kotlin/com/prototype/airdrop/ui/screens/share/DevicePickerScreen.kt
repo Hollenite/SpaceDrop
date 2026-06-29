@@ -130,35 +130,17 @@ fun DevicePickerScreen(
 
     val context = LocalContext.current
 
+    val shareRequestId = AppState.shareRequestId
+
     val permissionLauncher = rememberLauncherForActivityResult(
 
         ActivityResultContracts.RequestMultiplePermissions()
 
     ) { _ ->
 
-        viewModel.refresh()
+        if (BlePermissions.hasAll(context) && WifiPermissions.hasAll(context)) {
 
-    }
-
-
-
-    LaunchedEffect(Unit) {
-
-        val needed = buildList {
-
-            if (!BlePermissions.hasAll(context)) addAll(BlePermissions.requiredPermissions())
-
-            if (!WifiPermissions.hasAll(context)) addAll(WifiPermissions.requiredPermissions())
-
-        }.distinct().toTypedArray()
-
-        if (needed.isEmpty()) {
-
-            viewModel.refresh()
-
-        } else {
-
-            permissionLauncher.launch(needed)
+            viewModel.onShareSheetOpened(shareRequestId)
 
         }
 
@@ -176,17 +158,27 @@ fun DevicePickerScreen(
 
 
 
-    LaunchedEffect(AppState.shareRequestId) {
+    LaunchedEffect(shareRequestId) {
 
         completionHandled = false
 
         showHint = true
 
-        viewModel.prepareForNewShare()
+        val needed = buildList {
 
-        if (BlePermissions.hasAll(context)) {
+            if (!BlePermissions.hasAll(context)) addAll(BlePermissions.requiredPermissions())
 
-            viewModel.refresh()
+            if (!WifiPermissions.hasAll(context)) addAll(WifiPermissions.requiredPermissions())
+
+        }.distinct().toTypedArray()
+
+        if (needed.isEmpty()) {
+
+            viewModel.onShareSheetOpened(shareRequestId)
+
+        } else {
+
+            permissionLauncher.launch(needed)
 
         }
 
@@ -286,7 +278,7 @@ fun DevicePickerScreen(
 
         PullToRefreshBox(
 
-            isRefreshing = isLoading,
+            isRefreshing = isLoading && rankedDevices.isNotEmpty(),
 
             onRefresh = { viewModel.refresh() },
 

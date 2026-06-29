@@ -2,6 +2,7 @@ package com.prototype.airdrop.ui.screens.share
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.prototype.airdrop.core.discovery.RankedNearbyDevice
@@ -43,6 +44,8 @@ class DevicePickerViewModel(application: Application) : AndroidViewModel(applica
     private val _activeDeviceId = MutableStateFlow<String?>(null)
     val activeDeviceId: StateFlow<String?> = _activeDeviceId.asStateFlow()
 
+    private var lastHandledShareRequestId: Int = -1
+
     val pendingItems: List<TransferItem>
         get() = AppState.pendingTransferItems
 
@@ -50,8 +53,6 @@ class DevicePickerViewModel(application: Application) : AndroidViewModel(applica
         get() = pendingItems.size > 1
 
     init {
-        prepareForNewShare()
-        refresh()
         observeSuccessfulTransfer()
     }
 
@@ -75,8 +76,36 @@ class DevicePickerViewModel(application: Application) : AndroidViewModel(applica
         _activeDeviceId.value = null
     }
 
+    fun onShareSheetOpened(shareRequestId: Int) {
+        if (shareRequestId == lastHandledShareRequestId) return
+        lastHandledShareRequestId = shareRequestId
+
+        prepareForNewShare()
+
+        viewModelScope.launch {
+            when {
+                fusedRepository.hasFreshCache() -> {
+                    Log.d(TAG, "onShareSheetOpened shareRequestId=$shareRequestId path=refreshQuick freshCache")
+                    fusedRepository.refreshQuick()
+                }
+                fusedRepository.hasCachedDevices() -> {
+                    Log.d(TAG, "onShareSheetOpened shareRequestId=$shareRequestId path=refreshQuick staleCache")
+                    fusedRepository.refreshQuick()
+                }
+                else -> {
+                    Log.d(TAG, "onShareSheetOpened shareRequestId=$shareRequestId path=refresh cold")
+                    fusedRepository.ensureBleContinuousScanIfNeeded()
+                    fusedRepository.refresh()
+                }
+            }
+        }
+    }
+
+    /** User-initiated refresh (pull-to-refresh, empty-state retry). */
     fun refresh() {
         viewModelScope.launch {
+            Log.d(TAG, "refresh manual")
+            fusedRepository.ensureBleContinuousScanIfNeeded()
             fusedRepository.refresh()
         }
     }
@@ -132,7 +161,7 @@ class DevicePickerViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
+    companion object {
+        private const val TAG = "SpaceDropDiscovery"
     }
 }
