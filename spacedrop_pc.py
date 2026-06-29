@@ -16,6 +16,17 @@ SHARED_TOKEN = "spacedrop-dev-token"
 DEVICE_ID_FILE = Path(__file__).resolve().parent / "device_id.txt"
 
 
+def _get_default_route_ip() -> str | None:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 80))
+        return probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
 def load_or_create_device_id() -> str:
     if DEVICE_ID_FILE.exists():
         device_id = DEVICE_ID_FILE.read_text(encoding="utf-8").strip()
@@ -28,14 +39,25 @@ def load_or_create_device_id() -> str:
     return device_id
 
 
+def _is_unusable_for_mdns(ip: str) -> bool:
+    return ip.startswith("127.") or ip.startswith("169.254.")
+
+
+def _is_windows_ics_hotspot(ip: str) -> bool:
+    # Windows Mobile Hotspot / ICS uses 192.168.137.0/24 with the host at .1
+    return ip == "192.168.137.1" or ip.startswith("192.168.137.")
+
+
 def _ip_preference_score(ip: str) -> int:
-    """Lower score = preferred for local mDNS advertisement."""
+    """Lower score = preferred when default-route IP is unavailable."""
     parts = ip.split(".")
     if len(parts) != 4:
         return 100
-    first, second = int(parts[0]), int(parts[1])
-    if ip.startswith("127."):
+    if _is_unusable_for_mdns(ip):
         return 200
+    if _is_windows_ics_hotspot(ip):
+        return 180
+    first, second = int(parts[0]), int(parts[1])
     if first == 192 and second == 168:
         return 0
     if first == 10:
@@ -43,7 +65,7 @@ def _ip_preference_score(ip: str) -> int:
     if first == 172 and 16 <= second <= 31:
         return 2
     if first == 100 and 64 <= second <= 127:
-        return 99  # Tailscale / CGNAT — deprioritize for Wi-Fi discovery
+        return 10  # CGNAT campus Wi-Fi or Tailscale — still routable
     return 50
 
 
@@ -76,9 +98,23 @@ def get_local_ip() -> str:
     if not candidates:
         raise RuntimeError("Could not determine a local IPv4 address")
 
-    chosen = min(candidates, key=_ip_preference_score)
+    default_route_ip = _get_default_route_ip()
+    usable = [ip for ip in candidates if not _is_unusable_for_mdns(ip)]
+    if not usable:
+        raise RuntimeError("No usable local IPv4 address found")
+
+    if default_route_ip and default_route_ip in usable:
+        chosen = default_route_ip
+        selection_reason = "default_route"
+    else:
+        chosen = min(usable, key=_ip_preference_score)
+        selection_reason = "scored_fallback"
+
     if len(candidates) > 1:
-        print(f"Detected IPs: {', '.join(candidates)} — using {chosen} for mDNS")
+        print(
+            f"Detected IPs: {', '.join(candidates)} — using {chosen} for mDNS "
+            f"({selection_reason})"
+        )
     return chosen
 
 
