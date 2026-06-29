@@ -14,15 +14,16 @@ public sealed class TcpTransferServer : IAsyncDisposable
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
 
+    public string ReceivedDirectory { get; }
+
     public TcpTransferServer(string deviceId, string hostname)
     {
         _deviceId = deviceId;
         _hostname = hostname;
-        _receivedDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "SpaceDrop",
-            "received");
+        _receivedDir = ReceivedPathResolver.Resolve();
         Directory.CreateDirectory(_receivedDir);
+        ReceivedDirectory = _receivedDir;
+        Console.WriteLine($"Received files directory: {_receivedDir}");
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -190,6 +191,15 @@ public sealed class TcpTransferServer : IAsyncDisposable
                 path = dest
             }));
             Console.WriteLine($"Saved to {dest}");
+            // #region agent log
+            DebugAgentLog.Write("H5", "TcpTransferServer.cs:HandleFileMeta", "File saved", new
+            {
+                dest,
+                size,
+                peerIp,
+                runId = "transfer-check"
+            });
+            // #endregion
         }
         catch (Exception ex)
         {

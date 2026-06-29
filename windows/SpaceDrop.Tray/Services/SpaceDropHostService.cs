@@ -103,6 +103,9 @@ public sealed class SpaceDropHostService : IAsyncDisposable
         return $"SpaceDrop — {_currentIp ?? "no IP"} — {ble}";
     }
 
+    public string ReceivedDirectory => _tcp?.ReceivedDirectory
+        ?? ReceivedPathResolver.Resolve();
+
     public async Task StopAsync()
     {
         NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;

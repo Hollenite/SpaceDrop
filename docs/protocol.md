@@ -25,7 +25,7 @@ Dedup key on Android: `device_id`.
 
 ## BLE GATT (Tier 1)
 
-- Service UUID: `0000sd01-0000-1000-8000-00805f9b34fb`
+- Service UUID: `0000a501-0000-1000-8000-00805f9b34fb`
 - PC role: **peripheral** (advertiser + GATT server)
 - Phone role: **central** (scanner + GATT reader during share flow)
 
@@ -33,9 +33,9 @@ Dedup key on Android: `device_id`.
 
 | Name | UUID | Properties | Payload |
 |---|---|---|---|
-| `deviceId` | `0000sd02-0000-1000-8000-00805f9b34fb` | Read | UTF-8 UUID string |
-| `deviceName` | `0000sd03-0000-1000-8000-00805f9b34fb` | Read | UTF-8 hostname |
-| `endpoint` | `0000sd04-0000-1000-8000-00805f9b34fb` | Read | UTF-8 JSON: `{"host":"100.x.x.x","port":58392}` |
+| `deviceId` | `0000a502-0000-1000-8000-00805f9b34fb` | Read | UTF-8 UUID string |
+| `deviceName` | `0000a503-0000-1000-8000-00805f9b34fb` | Read | UTF-8 hostname |
+| `endpoint` | `0000a504-0000-1000-8000-00805f9b34fb` | Read | UTF-8 JSON: `{"host":"100.x.x.x","port":58392}` |
 
 ### Advertisement
 

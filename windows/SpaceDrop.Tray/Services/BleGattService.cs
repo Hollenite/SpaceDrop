@@ -68,17 +68,33 @@ public sealed class BleGattService : IAsyncDisposable
             IsDiscoverable = true
         });
 
-        _publisher = new BluetoothLEAdvertisementPublisher
+        try
         {
-            Advertisement =
+            _publisher = new BluetoothLEAdvertisementPublisher
             {
-                ServiceUuids = { SpaceDropProtocol.ServiceUuid }
-            }
-        };
-        _publisher.Start();
+                Advertisement =
+                {
+                    ServiceUuids = { SpaceDropProtocol.ServiceUuid }
+                }
+            };
+            _publisher.Start();
+        }
+        catch (Exception ex)
+        {
+            // #region agent log
+            DebugAgentLog.Write("H4", "BleGattService.cs:StartAsync", "BLE scan publisher failed; continuing with GATT only", new
+            {
+                type = ex.GetType().Name,
+                ex.Message,
+                runId = "post-fix"
+            });
+            // #endregion
+            Console.WriteLine($"BLE scan publisher unavailable: {ex.Message}");
+            _publisher = null;
+        }
 
         IsAvailable = true;
-        UnavailableReason = null;
+        UnavailableReason = _publisher is null ? "GATT only (scan publisher unavailable)" : null;
         Console.WriteLine($"BLE GATT advertising started for {deviceName} ({deviceId})");
     }
 
