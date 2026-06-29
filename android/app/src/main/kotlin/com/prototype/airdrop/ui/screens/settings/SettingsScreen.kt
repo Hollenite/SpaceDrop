@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -25,6 +26,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.prototype.airdrop.BuildConfig
 import com.prototype.airdrop.ui.components.SettingsRow
 import com.prototype.airdrop.ui.components.SettingsSectionHeader
 
@@ -35,6 +37,8 @@ fun SettingsScreen(
     onPrivacy: () -> Unit,
     onSavedDevices: () -> Unit,
     onRoomDiscoveryLab: () -> Unit,
+    onBleDiscoveryLab: () -> Unit,
+    onTransferLab: () -> Unit,
     onDiagnostics: () -> Unit
 ) {
     Scaffold(
@@ -105,10 +109,26 @@ fun SettingsScreen(
 
             SettingsRow(
                 title = "Room discovery lab",
-                subtitle = "Coming soon",
+                subtitle = "Handshake test",
                 icon = Icons.Default.Science,
                 onClick = onRoomDiscoveryLab
             )
+
+            if (BuildConfig.DEBUG) {
+                SettingsRow(
+                    title = "BLE discovery lab",
+                    subtitle = "Fused BLE + mDNS + confidence",
+                    icon = Icons.Default.Science,
+                    onClick = onBleDiscoveryLab
+                )
+
+                SettingsRow(
+                    title = "Transfer lab",
+                    subtitle = "Dev file send + liquid progress",
+                    icon = Icons.Default.Upload,
+                    onClick = onTransferLab
+                )
+            }
 
             SettingsSectionHeader(title = "Diagnostics", modifier = Modifier.padding(top = 8.dp))
 

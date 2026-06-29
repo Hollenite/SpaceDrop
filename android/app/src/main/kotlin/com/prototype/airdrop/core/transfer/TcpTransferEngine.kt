@@ -1,0 +1,131 @@
+package com.prototype.airdrop.core.transfer
+
+import android.content.ContentResolver
+import android.content.Context
+import com.prototype.airdrop.core.connectivity.DeviceIdStore
+import com.prototype.airdrop.core.connectivity.SpaceDropFileSender
+import com.prototype.airdrop.core.connectivity.SpaceDropHandshakeClient
+import com.prototype.airdrop.core.model.NearbyDevice
+import com.prototype.airdrop.core.model.TransferItem
+import com.prototype.airdrop.core.model.TransferSession
+import com.prototype.airdrop.core.model.TransferStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.util.UUID
+
+class TcpTransferEngine(context: Context) : TransferEngine {
+
+    private val appContext = context.applicationContext
+    private val fileSender = SpaceDropFileSender(DeviceIdStore(appContext))
+    private val scope = CoroutineScope(Dispatchers.IO)
+    private var transferJob: Job? = null
+
+    private val _session = MutableStateFlow<TransferSession?>(null)
+    override val session: StateFlow<TransferSession?> = _session.asStateFlow()
+
+    override fun start(
+        device: NearbyDevice,
+        items: List<TransferItem>,
+        contentResolver: ContentResolver?
+    ) {
+        transferJob?.cancel()
+
+        val host = device.host
+        if (host.isNullOrBlank()) {
+            _session.value = failedSession(device, items, "Device has no network address")
+            return
+        }
+        if (contentResolver == null) {
+            _session.value = failedSession(device, items, "Content resolver unavailable")
+            return
+        }
+        if (items.isEmpty()) {
+            _session.value = failedSession(device, items, "No files to send")
+            return
+        }
+        if (items.size > 1) {
+            _session.value = failedSession(device, items, "One file at a time in this version")
+            return
+        }
+
+        val item = items.first()
+        val sessionId = UUID.randomUUID().toString()
+        _session.value = TransferSession(
+            id = sessionId,
+            targetDevice = device,
+            items = items,
+            status = TransferStatus.SENDING,
+            progressPercent = 0,
+            speedText = ""
+        )
+
+        transferJob = scope.launch {
+            val result = fileSender.sendFile(
+                host = host,
+                port = device.port,
+                item = item,
+                contentResolver = contentResolver,
+                onProgress = { update ->
+                    _session.value = _session.value?.copy(
+                        status = TransferStatus.SENDING,
+                        progressPercent = update.progressPercent,
+                        speedText = update.speedText
+                    )
+                }
+            )
+
+            _session.value = if (result.success) {
+                _session.value?.copy(
+                    targetDevice = device.copy(name = result.pcName ?: device.name),
+                    status = TransferStatus.COMPLETED,
+                    progressPercent = 100,
+                    speedText = ""
+                )
+            } else {
+                _session.value?.copy(
+                    status = TransferStatus.FAILED,
+                    speedText = "",
+                    errorMessage = result.error ?: "Transfer failed"
+                )
+            }
+        }
+    }
+
+    override fun cancel() {
+        transferJob?.cancel()
+        transferJob = null
+        _session.value = _session.value?.copy(
+            status = TransferStatus.CANCELLED,
+            speedText = ""
+        )
+    }
+
+    override fun reset() {
+        transferJob?.cancel()
+        transferJob = null
+        _session.value = null
+    }
+
+    private fun failedSession(
+        device: NearbyDevice,
+        items: List<TransferItem>,
+        message: String
+    ): TransferSession = TransferSession(
+        id = UUID.randomUUID().toString(),
+        targetDevice = device,
+        items = items,
+        status = TransferStatus.FAILED,
+        progressPercent = 0,
+        speedText = "",
+        errorMessage = message
+    )
+
+    companion object {
+        val DEFAULT_PORT = SpaceDropHandshakeClient.HANDSHAKE_PORT
+    }
+}

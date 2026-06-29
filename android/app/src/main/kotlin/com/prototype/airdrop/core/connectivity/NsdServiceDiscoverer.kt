@@ -23,7 +23,6 @@ class NsdServiceDiscoverer(context: Context) {
     private val mainExecutor: Executor = ContextCompat.getMainExecutor(appContext)
 
     private var discoveryListener: NsdManager.DiscoveryListener? = null
-    private var serviceInfoCallback: NsdManager.ServiceInfoCallback? = null
     private var multicastLock: WifiManager.MulticastLock? = null
 
     /**
@@ -31,38 +30,42 @@ class NsdServiceDiscoverer(context: Context) {
      * All NsdManager calls run on the main thread.
      */
     suspend fun discoverOnce(timeoutMs: Long = 10_000L): String? =
+        discoverPc(timeoutMs)?.host
+
+    suspend fun discoverAllPcs(timeoutMs: Long = 10_000L): List<DiscoveredPc> =
         withContext(Dispatchers.Main) {
             withTimeoutOrNull(timeoutMs) {
+                val collected = mutableListOf<DiscoveredPc>()
                 for (serviceType in SERVICE_TYPES) {
                     log("Trying service type: $serviceType")
-                    val host = discoverWithType(serviceType)
-                    if (host != null) {
-                        log("Resolved host $host via $serviceType")
-                        return@withTimeoutOrNull host
-                    }
+                    val pcs = discoverAllWithType(serviceType, timeoutMs / SERVICE_TYPES.size)
+                    collected.addAll(pcs)
+                    if (collected.isNotEmpty()) break
                 }
-                log("No service found after trying all types")
-                null
-            }
+                collected.distinctBy { "${it.deviceId ?: it.host}:${it.port}" }
+            } ?: emptyList()
         }
 
-    private suspend fun discoverWithType(serviceType: String): String? =
+    /**
+     * One-shot discovery. Returns resolved PC service name + IPv4 host, or null on timeout.
+     */
+    suspend fun discoverPc(timeoutMs: Long = 10_000L): DiscoveredPc? =
+        discoverAllPcs(timeoutMs).firstOrNull()
+    private suspend fun discoverAllWithType(serviceType: String, timeoutMs: Long): List<DiscoveredPc> =
         suspendCancellableCoroutine { continuation ->
             var finished = false
             var listener: NsdManager.DiscoveryListener? = null
+            val resolved = mutableListOf<DiscoveredPc>()
+            val pendingResolves = mutableSetOf<String>()
 
             fun cleanup() {
-                serviceInfoCallback?.let {
-                    runCatching { nsdManager.unregisterServiceInfoCallback(it) }
-                }
-                serviceInfoCallback = null
                 listener?.let { runCatching { nsdManager.stopServiceDiscovery(it) } }
                 listener = null
                 discoveryListener = null
                 releaseMulticastLock()
             }
 
-            fun finish(result: String?) {
+            fun finish(result: List<DiscoveredPc>) {
                 if (finished) return
                 finished = true
                 cleanup()
@@ -84,11 +87,19 @@ class NsdServiceDiscoverer(context: Context) {
                         log("Ignoring unrelated service: ${serviceInfo.serviceType}")
                         return
                     }
-                    log("Service found: ${serviceInfo.serviceName} type=${serviceInfo.serviceType}")
-                    resolveService(serviceInfo, onResolved = { host ->
-                        if (host != null) finish(host)
+                    val serviceName = serviceInfo.serviceName ?: return
+                    if (serviceName in pendingResolves) return
+                    pendingResolves.add(serviceName)
+                    log("Service found: $serviceName type=${serviceInfo.serviceType}")
+                    resolveService(serviceInfo, onResolved = { pc ->
+                        pendingResolves.remove(serviceName)
+                        if (pc != null) {
+                            resolved.add(pc)
+                            log("Resolved ${pc.serviceName} at ${pc.host}:${pc.port} id=${pc.deviceId}")
+                        }
                     }, onFailed = {
-                        log("Resolve failed for ${serviceInfo.serviceName}")
+                        pendingResolves.remove(serviceName)
+                        log("Resolve failed for $serviceName")
                     })
                 }
 
@@ -100,7 +111,7 @@ class NsdServiceDiscoverer(context: Context) {
 
                 override fun onStartDiscoveryFailed(type: String, errorCode: Int) {
                     log("Start discovery failed for $type error=$errorCode")
-                    finish(null)
+                    finish(emptyList())
                 }
 
                 override fun onStopDiscoveryFailed(type: String, errorCode: Int) {
@@ -122,53 +133,48 @@ class NsdServiceDiscoverer(context: Context) {
                 )
             }.onFailure { error ->
                 log("discoverServices threw: ${error.message}")
-                finish(null)
+                finish(emptyList())
+                return@suspendCancellableCoroutine
             }
+
+            android.os.Handler(appContext.mainLooper).postDelayed({
+                finish(resolved.toList())
+            }, timeoutMs.coerceAtLeast(1_000L))
         }
 
     private fun resolveService(
         serviceInfo: NsdServiceInfo,
-        onResolved: (String?) -> Unit,
+        onResolved: (DiscoveredPc?) -> Unit,
         onFailed: () -> Unit
     ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            serviceInfoCallback?.let {
-                runCatching { nsdManager.unregisterServiceInfoCallback(it) }
-            }
             val callback = object : NsdManager.ServiceInfoCallback {
                 override fun onServiceUpdated(info: NsdServiceInfo) {
-                    val host = resolveHost(info)
-                    log("Service updated: ${info.serviceName} host=$host")
-                    if (host != null) {
+                    val pc = toDiscoveredPc(info)
+                    log("Service updated: ${info.serviceName} host=${pc?.host}")
+                    if (pc != null) {
                         runCatching { nsdManager.unregisterServiceInfoCallback(this) }
-                        serviceInfoCallback = null
-                        onResolved(host)
+                        onResolved(pc)
                     }
                 }
 
                 override fun onServiceLost() {
                     log("Service lost during resolve: ${serviceInfo.serviceName}")
                     runCatching { nsdManager.unregisterServiceInfoCallback(this) }
-                    serviceInfoCallback = null
                     onFailed()
                 }
 
                 override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
                     log("ServiceInfoCallback registration failed error=$errorCode")
-                    serviceInfoCallback = null
                     onFailed()
                 }
 
-                override fun onServiceInfoCallbackUnregistered() {
-                    serviceInfoCallback = null
-                }
+                override fun onServiceInfoCallbackUnregistered() = Unit
             }
-            serviceInfoCallback = callback
             runCatching {
                 nsdManager.registerServiceInfoCallback(serviceInfo, mainExecutor, callback)
             }.onFailure { error ->
                 log("registerServiceInfoCallback failed: ${error.message}")
-                serviceInfoCallback = null
                 onFailed()
             }
         } else {
@@ -182,20 +188,39 @@ class NsdServiceDiscoverer(context: Context) {
                     }
 
                     override fun onServiceResolved(info: NsdServiceInfo) {
-                        val host = resolveHost(info)
-                        log("resolveService resolved host=$host")
-                        onResolved(host)
+                        val pc = toDiscoveredPc(info)
+                        log("resolveService resolved host=${pc?.host}")
+                        onResolved(pc)
                     }
                 }
             )
         }
     }
 
+    private fun toDiscoveredPc(info: NsdServiceInfo): DiscoveredPc? {
+        val host = resolveHost(info) ?: return null
+        val port = if (info.port > 0) info.port else SpaceDropHandshakeClient.HANDSHAKE_PORT
+        val deviceId = parseTxtAttribute(info, "device_id")
+        return DiscoveredPc(
+            serviceName = info.serviceName ?: host,
+            host = host,
+            port = port,
+            deviceId = deviceId
+        )
+    }
+
+    private fun parseTxtAttribute(info: NsdServiceInfo, key: String): String? {
+        val attributes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            info.attributes
+        } else {
+            @Suppress("DEPRECATION")
+            info.attributes
+        } ?: return null
+        val bytes = attributes[key] ?: return null
+        return String(bytes, Charsets.UTF_8).trim().takeIf { it.isNotEmpty() }
+    }
+
     fun stopDiscovery() {
-        serviceInfoCallback?.let {
-            runCatching { nsdManager.unregisterServiceInfoCallback(it) }
-        }
-        serviceInfoCallback = null
         discoveryListener?.let { runCatching { nsdManager.stopServiceDiscovery(it) } }
         discoveryListener = null
         releaseMulticastLock()

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""SpaceDrop PC listener — mDNS advertisement and PING/PONG handshake."""
+"""SpaceDrop PC listener — mDNS advertisement and PING/PONG handshake.
+
+Dev fallback only — prefer windows/SpaceDrop.Tray for normal use.
+"""
 
 import json
 import socket
@@ -118,7 +121,7 @@ def get_local_ip() -> str:
     return chosen
 
 
-def register_mdns(hostname: str, port: int) -> tuple[Zeroconf, ServiceInfo]:
+def register_mdns(hostname: str, port: int, device_id: str) -> tuple[Zeroconf, ServiceInfo]:
     local_ip = get_local_ip()
     service_name = f"{hostname}.{SERVICE_TYPE}"
     info = ServiceInfo(
@@ -126,7 +129,10 @@ def register_mdns(hostname: str, port: int) -> tuple[Zeroconf, ServiceInfo]:
         service_name,
         addresses=[socket.inet_aton(local_ip)],
         port=port,
-        properties={},
+        properties={
+            "device_id": device_id.encode("utf-8"),
+            "version": b"1",
+        },
     )
     zeroconf = Zeroconf()
     zeroconf.register_service(info)
@@ -146,6 +152,55 @@ def read_line(conn: socket.socket) -> str:
             break
         buffer.extend(chunk)
     return buffer.decode("utf-8")
+
+
+def read_exact(conn: socket.socket, size: int) -> bytes:
+    buffer = bytearray()
+    while len(buffer) < size:
+        chunk = conn.recv(min(65536, size - len(buffer)))
+        if not chunk:
+            raise EOFError(f"Expected {size} bytes, got {len(buffer)}")
+        buffer.extend(chunk)
+    return bytes(buffer)
+
+
+def send_json(conn: socket.socket, payload: dict) -> None:
+    conn.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+
+
+def sanitize_filename(name: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    return safe[:200] or "received_file"
+
+
+def handle_file_meta(conn: socket.socket, message: dict, peer_ip: str) -> None:
+    if message.get("token") != SHARED_TOKEN:
+        send_json(conn, {"type": "FILE_ACK", "ok": False, "error": "invalid token"})
+        print(f"Rejected FILE_META from {peer_ip} — invalid token")
+        return
+
+    name = sanitize_filename(message.get("name", "received_file"))
+    size = message.get("size")
+    if not isinstance(size, int) or size < 0:
+        send_json(conn, {"type": "FILE_ACK", "ok": False, "error": "invalid size"})
+        return
+
+    received_dir = Path(__file__).resolve().parent / "received"
+    received_dir.mkdir(exist_ok=True)
+    dest = received_dir / name
+
+    print(f"Receiving {name} ({size} bytes) from {peer_ip}")
+    try:
+        if size == 0:
+            data = b""
+        else:
+            data = read_exact(conn, size)
+        dest.write_bytes(data)
+        send_json(conn, {"type": "FILE_ACK", "ok": True, "path": str(dest)})
+        print(f"Saved to {dest}")
+    except (EOFError, OSError) as error:
+        send_json(conn, {"type": "FILE_ACK", "ok": False, "error": str(error)})
+        print(f"File receive failed from {peer_ip}: {error}")
 
 
 def handle_connection(
@@ -185,8 +240,27 @@ def handle_connection(
         "device_id": device_id,
         "token": SHARED_TOKEN,
     }
-    conn.sendall((json.dumps(pong) + "\n").encode("utf-8"))
+    send_json(conn, pong)
     print(f"Connected to {peer_name} ({peer_id})")
+
+    while True:
+        try:
+            line = read_line(conn)
+        except (ConnectionResetError, BrokenPipeError):
+            break
+        if not line.strip():
+            break
+        try:
+            next_message = json.loads(line)
+        except json.JSONDecodeError:
+            print(f"Invalid JSON after PONG from {peer_ip}")
+            break
+        msg_type = next_message.get("type")
+        if msg_type == "FILE_META":
+            handle_file_meta(conn, next_message, peer_ip)
+        else:
+            print(f"Unexpected message type from {peer_ip}: {msg_type!r}")
+            break
 
 
 def main() -> None:
@@ -198,7 +272,7 @@ def main() -> None:
     server: socket.socket | None = None
 
     try:
-        zeroconf, service_info = register_mdns(hostname, PORT)
+        zeroconf, service_info = register_mdns(hostname, PORT, device_id)
 
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

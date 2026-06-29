@@ -2,6 +2,7 @@ package com.prototype.airdrop.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -14,9 +15,11 @@ import com.prototype.airdrop.ui.screens.onboarding.OnboardingScreen
 import com.prototype.airdrop.ui.screens.pairing.PairingScreen
 import com.prototype.airdrop.ui.screens.settings.DiagnosticsScreen
 import com.prototype.airdrop.ui.screens.settings.PrivacyScreen
+import com.prototype.airdrop.ui.screens.settings.BleDiscoveryLabScreen
 import com.prototype.airdrop.ui.screens.settings.RoomDiscoveryLabScreen
 import com.prototype.airdrop.ui.screens.settings.SavedDevicesScreen
 import com.prototype.airdrop.ui.screens.settings.SettingsScreen
+import com.prototype.airdrop.ui.screens.settings.TransferLabScreen
 import com.prototype.airdrop.ui.screens.share.DevicePickerScreen
 import com.prototype.airdrop.ui.screens.transfer.CompleteScreen
 import com.prototype.airdrop.ui.screens.transfer.FailedScreen
@@ -56,20 +59,23 @@ fun AppNavGraph(
         }
 
         composable(Routes.DEVICE_PICKER) {
+            val context = LocalContext.current
             DevicePickerScreen(
-                onDeviceSelected = { deviceId ->
-                    val device = AppDependencies.repository.findById(deviceId)
-                    if (device != null) {
-                        AppState.selectedDevice = device
-                        navController.navigate(Routes.SENDING) {
-                            popUpTo(Routes.DEVICE_PICKER)
-                        }
+                onComplete = {
+                    navController.navigate(Routes.COMPLETE) {
+                        popUpTo(Routes.DEVICE_PICKER) { inclusive = false }
                     }
                 },
-                onDeviceNew = { deviceId ->
-                    navController.navigate(Routes.pairing(deviceId, fromShare = true))
+                onFailed = {
+                    navController.navigate(Routes.FAILED) {
+                        popUpTo(Routes.DEVICE_PICKER) { inclusive = false }
+                    }
                 },
-                onBack = { navController.popBackStack() }
+                onBack = {
+                    AppState.clear()
+                    AppDependencies.tcpTransferEngine(context).reset()
+                    navController.popBackStack()
+                }
             )
         }
 
@@ -121,9 +127,12 @@ fun AppNavGraph(
         }
 
         composable(Routes.COMPLETE) {
+            val context = LocalContext.current
             CompleteScreen(
                 onDone = {
                     AppState.clear()
+                    AppDependencies.transferEngine.reset()
+                    AppDependencies.tcpTransferEngine(context).reset()
                     navController.navigate(Routes.HOME) {
                         popUpTo(Routes.HOME) { inclusive = false }
                     }
@@ -133,19 +142,31 @@ fun AppNavGraph(
         }
 
         composable(Routes.FAILED) {
+            val context = LocalContext.current
             FailedScreen(
                 onTryAgain = {
-                    navController.navigate(Routes.SENDING) {
+                    val destination = if (AppState.isFromShareSheet) {
+                        Routes.DEVICE_PICKER
+                    } else {
+                        Routes.SENDING
+                    }
+                    navController.navigate(destination) {
                         popUpTo(Routes.FAILED) { inclusive = true }
                     }
                 },
                 onChooseAnother = {
-                    navController.navigate(Routes.DEVICE_PICKER) {
-                        popUpTo(Routes.DEVICE_PICKER) { inclusive = false }
+                    val destination = if (AppState.isFromShareSheet) {
+                        Routes.DEVICE_PICKER
+                    } else {
+                        Routes.HOME
+                    }
+                    navController.navigate(destination) {
+                        popUpTo(Routes.FAILED) { inclusive = true }
                     }
                 },
                 onCancel = {
                     AppState.clear()
+                    AppDependencies.tcpTransferEngine(context).reset()
                     navController.navigate(Routes.HOME) {
                         popUpTo(Routes.HOME) { inclusive = false }
                     }
@@ -159,6 +180,8 @@ fun AppNavGraph(
                 onPrivacy = { navController.navigate(Routes.PRIVACY) },
                 onSavedDevices = { navController.navigate(Routes.SAVED_DEVICES) },
                 onRoomDiscoveryLab = { navController.navigate(Routes.ROOM_DISCOVERY_LAB) },
+                onBleDiscoveryLab = { navController.navigate(Routes.BLE_DISCOVERY_LAB) },
+                onTransferLab = { navController.navigate(Routes.TRANSFER_LAB) },
                 onDiagnostics = { navController.navigate(Routes.DIAGNOSTICS) }
             )
         }
@@ -173,6 +196,14 @@ fun AppNavGraph(
 
         composable(Routes.ROOM_DISCOVERY_LAB) {
             RoomDiscoveryLabScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.BLE_DISCOVERY_LAB) {
+            BleDiscoveryLabScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.TRANSFER_LAB) {
+            TransferLabScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.DIAGNOSTICS) {

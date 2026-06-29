@@ -1,9 +1,11 @@
 package com.prototype.airdrop.core.mock
 
+import android.content.ContentResolver
 import com.prototype.airdrop.core.model.NearbyDevice
 import com.prototype.airdrop.core.model.TransferItem
 import com.prototype.airdrop.core.model.TransferSession
 import com.prototype.airdrop.core.model.TransferStatus
+import com.prototype.airdrop.core.transfer.TransferEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,13 +17,13 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.random.Random
 
-class FakeTransferEngine(private val repository: MockNearbyDeviceRepository) {
+class FakeTransferEngine(private val repository: MockNearbyDeviceRepository) : TransferEngine {
 
     private val scope = CoroutineScope(Dispatchers.Default)
     private var transferJob: Job? = null
 
     private val _session = MutableStateFlow<TransferSession?>(null)
-    val session: StateFlow<TransferSession?> = _session.asStateFlow()
+    override val session: StateFlow<TransferSession?> = _session.asStateFlow()
 
     private val speedValues = listOf(
         "2.1 MB/s", "4.8 MB/s", "6.2 MB/s", "8.4 MB/s", "9.1 MB/s",
@@ -29,7 +31,11 @@ class FakeTransferEngine(private val repository: MockNearbyDeviceRepository) {
         "6.9 MB/s", "9.3 MB/s", "7.7 MB/s", "10.8 MB/s", "8.1 MB/s"
     )
 
-    fun start(device: NearbyDevice, items: List<TransferItem>) {
+    override fun start(
+        device: NearbyDevice,
+        items: List<TransferItem>,
+        contentResolver: ContentResolver?
+    ) {
         transferJob?.cancel()
         val sessionId = UUID.randomUUID().toString()
         val shouldFail = repository.scenario.value == MockScenario.TRANSFER_FAILURE
@@ -79,7 +85,7 @@ class FakeTransferEngine(private val repository: MockNearbyDeviceRepository) {
         }
     }
 
-    fun cancel() {
+    override fun cancel() {
         transferJob?.cancel()
         transferJob = null
         _session.value = _session.value?.copy(
@@ -88,7 +94,7 @@ class FakeTransferEngine(private val repository: MockNearbyDeviceRepository) {
         )
     }
 
-    fun reset() {
+    override fun reset() {
         transferJob?.cancel()
         transferJob = null
         _session.value = null
