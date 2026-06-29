@@ -12,6 +12,8 @@ object Routes {
     const val PRIVACY = "privacy"
     const val SAVED_DEVICES = "saved_devices"
     const val ROOM_DISCOVERY_LAB = "room_discovery_lab"
+    const val BLE_DISCOVERY_LAB = "ble_discovery_lab"
+    const val TRANSFER_LAB = "transfer_lab"
     const val DIAGNOSTICS = "diagnostics"
 
     fun pairing(deviceId: String, fromShare: Boolean = false): String =

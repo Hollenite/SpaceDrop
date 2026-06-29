@@ -13,6 +13,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
 import com.prototype.airdrop.core.mock.AppState
+import com.prototype.airdrop.core.util.ContentUriUtils
 import com.prototype.airdrop.core.model.TransferItem
 import com.prototype.airdrop.navigation.AppNavGraph
 import com.prototype.airdrop.navigation.Routes
@@ -66,11 +67,12 @@ class MainActivity : ComponentActivity() {
     private fun parseSingleShareIntent(intent: Intent): List<TransferItem> {
         val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
         val mimeType = intent.type
-        val displayName = uri?.lastPathSegment ?: "file"
+        val displayName = uri?.let { ContentUriUtils.resolveDisplayName(this, it, mimeType) } ?: "file"
         val sizeBytes = uri?.let { resolveFileSize(it) }
 
         return listOf(
             TransferItem(
+                contentUri = uri ?: Uri.EMPTY,
                 displayName = displayName,
                 mimeType = mimeType,
                 sizeBytes = sizeBytes
@@ -84,7 +86,8 @@ class MainActivity : ComponentActivity() {
 
         return uris.map { uri ->
             TransferItem(
-                displayName = uri.lastPathSegment ?: "file",
+                contentUri = uri,
+                displayName = ContentUriUtils.resolveDisplayName(this, uri, intent.type),
                 mimeType = intent.type,
                 sizeBytes = resolveFileSize(uri)
             )
