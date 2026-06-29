@@ -121,18 +121,46 @@ def get_local_ip() -> str:
     return chosen
 
 
+def try_get_connected_bssid() -> str | None:
+    import re
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["netsh", "wlan", "show", "interfaces"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        match = re.search(
+            r"^\s*BSSID\s*:\s*([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s*$",
+            result.stdout,
+            re.MULTILINE,
+        )
+        return match.group(1).lower() if match else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def register_mdns(hostname: str, port: int, device_id: str) -> tuple[Zeroconf, ServiceInfo]:
     local_ip = get_local_ip()
+    bssid = try_get_connected_bssid()
     service_name = f"{hostname}.{SERVICE_TYPE}"
+    properties = {
+        "device_id": device_id.encode("utf-8"),
+        "version": b"1",
+    }
+    if bssid:
+        properties["bssid"] = bssid.encode("utf-8")
     info = ServiceInfo(
         SERVICE_TYPE,
         service_name,
         addresses=[socket.inet_aton(local_ip)],
         port=port,
-        properties={
-            "device_id": device_id.encode("utf-8"),
-            "version": b"1",
-        },
+        properties=properties,
     )
     zeroconf = Zeroconf()
     zeroconf.register_service(info)

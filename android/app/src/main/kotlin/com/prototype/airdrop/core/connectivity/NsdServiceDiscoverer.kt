@@ -201,11 +201,13 @@ class NsdServiceDiscoverer(context: Context) {
         val host = resolveHost(info) ?: return null
         val port = if (info.port > 0) info.port else SpaceDropHandshakeClient.HANDSHAKE_PORT
         val deviceId = parseTxtAttribute(info, "device_id")
+        val bssid = parseTxtAttribute(info, "bssid")?.lowercase()
         return DiscoveredPc(
             serviceName = info.serviceName ?: host,
             host = host,
             port = port,
-            deviceId = deviceId
+            deviceId = deviceId,
+            bssid = bssid
         )
     }
 

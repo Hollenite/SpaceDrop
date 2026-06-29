@@ -4,7 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.prototype.airdrop.core.discovery.FusionBreakdown
-import com.prototype.airdrop.core.discovery.FusedNearbyDeviceRepository
+import com.prototype.airdrop.core.mock.AppDependencies
 import com.prototype.airdrop.core.model.NearbyDevice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -13,12 +13,13 @@ import kotlinx.coroutines.launch
 
 class BleDiscoveryLabViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = FusedNearbyDeviceRepository(application)
+    private val repository = AppDependencies.fusedNearbyDeviceRepository(application)
 
     val devices: StateFlow<List<NearbyDevice>> = repository.devices
     val isLoading: StateFlow<Boolean> = repository.isLoading
     val errorMessage: StateFlow<String?> = repository.errorMessage
     val fusionBreakdown: StateFlow<List<Pair<NearbyDevice, FusionBreakdown>>> = repository.fusionBreakdown
+    val phoneBssid: StateFlow<String?> = repository.phoneBssid
 
     private val _logLines = MutableStateFlow<List<String>>(emptyList())
     val logLines: StateFlow<List<String>> = _logLines.asStateFlow()
@@ -31,6 +32,8 @@ class BleDiscoveryLabViewModel(application: Application) : AndroidViewModel(appl
         viewModelScope.launch {
             appendLog("Starting fused BLE + mDNS scan…")
             repository.refresh()
+            val phone = repository.phoneBssid.value
+            appendLog("Phone BSSID: ${phone ?: "unavailable"}")
             val breakdown = repository.fusionBreakdown.value
             if (breakdown.isEmpty()) {
                 appendLog("No devices after fusion")
@@ -39,7 +42,11 @@ class BleDiscoveryLabViewModel(application: Application) : AndroidViewModel(appl
                     appendLog(
                         "${device.name} id=${device.id} conf=${device.confidence} " +
                             "prox=${device.proximityState} ble=${fusion.hasBle} mdns=${fusion.hasMdns} " +
-                            "rssi=${fusion.rssi} base=${fusion.baseConfidence} boost=${fusion.mdnsBoost}"
+                            "rssi=${fusion.rssi} wifi=${fusion.bssidMatch} " +
+                            "phoneBssid=${fusion.phoneBssid} pcBssid=${fusion.pcBssid} " +
+                            "signals=${fusion.signalSummary} " +
+                            "wBle=${fusion.bleRssiWeight} wMdns=${fusion.mdnsWeight} wAgree=${fusion.agreementWeight} " +
+                            "wBssid=${fusion.bssidWeight} wHost=${fusion.hostWeight}"
                     )
                 }
             }

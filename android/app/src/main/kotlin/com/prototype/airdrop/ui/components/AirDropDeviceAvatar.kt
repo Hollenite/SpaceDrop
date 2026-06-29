@@ -20,11 +20,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import com.prototype.airdrop.ui.theme.SpaceDropColors
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,9 +47,11 @@ fun AirDropDeviceAvatar(
     progressPercent: Int,
     enabled: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    ringSize: androidx.compose.ui.unit.Dp = 112.dp,
+    buttonSize: androidx.compose.ui.unit.Dp = 88.dp,
+    contentAlpha: Float = 1f
 ) {
-    val ringSize = 112.dp
     val animatedProgress by animateFloatAsState(
         targetValue = when (state) {
             AvatarTransferState.Sending -> progressPercent / 100f
@@ -59,19 +63,19 @@ fun AirDropDeviceAvatar(
     )
 
     val ringColor = when (state) {
-        AvatarTransferState.Sent -> Color(0xFF34D399)
+        AvatarTransferState.Sent -> SpaceDropColors.Success
         AvatarTransferState.Failed -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.primary
     }
 
     val buttonColor = when (state) {
-        AvatarTransferState.Sent -> Color(0xFF16433A)
+        AvatarTransferState.Sent -> Color(0xFF1A2E28)
         AvatarTransferState.Failed -> MaterialTheme.colorScheme.errorContainer
-        else -> MaterialTheme.colorScheme.primaryContainer
+        else -> SpaceDropColors.SurfaceElevated
     }
 
     Column(
-        modifier = modifier,
+        modifier = modifier.alpha(contentAlpha),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
@@ -85,7 +89,7 @@ fun AirDropDeviceAvatar(
                 val arcSize = Size(diameter, diameter)
 
                 drawArc(
-                    color = Color(0xFF2A313C),
+                    color = com.prototype.airdrop.ui.theme.SpaceDropColors.RingTrack,
                     startAngle = 0f,
                     sweepAngle = 360f,
                     useCenter = false,
@@ -109,7 +113,7 @@ fun AirDropDeviceAvatar(
 
             Surface(
                 modifier = Modifier
-                    .size(88.dp)
+                    .size(buttonSize)
                     .clip(CircleShape)
                     .clickable(enabled = enabled, onClick = onClick),
                 color = buttonColor,
@@ -120,7 +124,7 @@ fun AirDropDeviceAvatar(
                         AvatarTransferState.Sent -> Icon(
                             imageVector = Icons.Default.Check,
                             contentDescription = null,
-                            tint = Color(0xFF34D399),
+                            tint = SpaceDropColors.Success,
                             modifier = Modifier.size(36.dp)
                         )
                         else -> Icon(
@@ -157,7 +161,7 @@ fun AirDropDeviceAvatar(
             Text(
                 text = "Sent",
                 style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF34D399)
+                color = SpaceDropColors.Success
             )
         } else if (state == AvatarTransferState.Failed) {
             Text(

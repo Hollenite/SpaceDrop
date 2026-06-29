@@ -1,17 +1,23 @@
 package com.prototype.airdrop.ui.screens.transfer
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.prototype.airdrop.core.mock.AppDependencies
 import com.prototype.airdrop.core.mock.AppState
 import com.prototype.airdrop.core.model.TransferSession
+import com.prototype.airdrop.core.transfer.TransferEngine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 
-class TransferViewModel : ViewModel() {
+class TransferViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val engine = AppDependencies.transferEngine
+    private val engine: TransferEngine = if (AppState.isFromShareSheet) {
+        AppDependencies.tcpTransferEngine(application)
+    } else {
+        AppDependencies.transferEngine
+    }
 
     val session: StateFlow<TransferSession?> = engine.session
         .stateIn(
@@ -32,9 +38,5 @@ class TransferViewModel : ViewModel() {
 
     fun reset() {
         engine.reset()
-    }
-
-    override fun onCleared() {
-        super.onCleared()
     }
 }
