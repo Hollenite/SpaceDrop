@@ -1,0 +1,5 @@
+# Windows build outputs
+windows/AcousticEmitter/bin/
+windows/AcousticEmitter/obj/
+
+# Android build outputs (see android/.gitignore)
