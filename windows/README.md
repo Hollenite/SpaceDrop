@@ -106,7 +106,7 @@ That was caused by the earlier WinUI setup. This project **no longer uses WinUI 
 
 |---|---|
 
-| Received files | `%USERPROFILE%\SpaceDrop\received\` |
+| Received files | `D:\PROJECTS\SpaceDrop\received\` when running from repo (detects `spacedrop_pc.py`), else `%USERPROFILE%\SpaceDrop\received\` |
 
 | Device ID | `%LOCALAPPDATA%\SpaceDrop\device_id.txt` |
 

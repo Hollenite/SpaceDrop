@@ -1,6 +1,7 @@
 package com.prototype.airdrop.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
@@ -29,8 +30,18 @@ import com.prototype.airdrop.ui.screens.transfer.SendingScreen
 fun AppNavGraph(
     navController: NavHostController,
     startDestination: String,
+    shareNavigationTick: Int = 0,
     modifier: Modifier = Modifier
 ) {
+    LaunchedEffect(shareNavigationTick) {
+        if (shareNavigationTick > 0 && AppState.isFromShareSheet) {
+            navController.navigate(Routes.DEVICE_PICKER) {
+                popUpTo(Routes.DEVICE_PICKER) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = startDestination,
@@ -145,6 +156,7 @@ fun AppNavGraph(
             val context = LocalContext.current
             FailedScreen(
                 onTryAgain = {
+                    AppDependencies.tcpTransferEngine(context).reset()
                     val destination = if (AppState.isFromShareSheet) {
                         Routes.DEVICE_PICKER
                     } else {
@@ -155,6 +167,7 @@ fun AppNavGraph(
                     }
                 },
                 onChooseAnother = {
+                    AppDependencies.tcpTransferEngine(context).reset()
                     val destination = if (AppState.isFromShareSheet) {
                         Routes.DEVICE_PICKER
                     } else {

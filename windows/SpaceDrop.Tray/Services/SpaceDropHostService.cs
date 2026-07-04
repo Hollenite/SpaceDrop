@@ -77,9 +77,16 @@ public sealed class SpaceDropHostService : IAsyncDisposable
         }
 
         _currentIp = selection.Ip;
+        var bssid = WlanBssidReader.TryGetConnectedBssid();
         Console.WriteLine($"Using {selection.Ip} for mDNS ({selection.Reason})");
 
-        await _mdns.StartAsync(hostname, deviceId, selection.Ip, SpaceDropProtocol.Port, CancellationToken.None);
+        await _mdns.StartAsync(
+            hostname,
+            deviceId,
+            selection.Ip,
+            SpaceDropProtocol.Port,
+            bssid,
+            CancellationToken.None);
 
         if (_ble.IsAvailable)
         {
@@ -102,6 +109,9 @@ public sealed class SpaceDropHostService : IAsyncDisposable
         var ble = _ble.IsAvailable ? "BLE on" : $"BLE off ({_ble.UnavailableReason ?? "unknown"})";
         return $"SpaceDrop — {_currentIp ?? "no IP"} — {ble}";
     }
+
+    public string ReceivedDirectory => _tcp?.ReceivedDirectory
+        ?? ReceivedPathResolver.Resolve();
 
     public async Task StopAsync()
     {

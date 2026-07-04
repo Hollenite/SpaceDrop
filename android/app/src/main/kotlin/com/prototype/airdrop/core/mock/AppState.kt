@@ -11,6 +11,7 @@ object AppState {
     var pendingTransferItems: List<TransferItem> = emptyList()
     var selectedDevice: NearbyDevice? = null
     var isFromShareSheet: Boolean = false
+    var shareRequestId: Int = 0
 
     fun clear() {
         pendingTransferItems = emptyList()

@@ -1,0 +1,7 @@
+# Build outputs
+bin/
+obj/
+.gradle/
+build/
+local.properties
+*.apk

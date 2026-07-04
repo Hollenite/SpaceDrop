@@ -21,6 +21,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.nio.charset.Charset
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
 class BlePcScanner(context: Context) {
@@ -32,11 +33,66 @@ class BlePcScanner(context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var scanCallback: ScanCallback? = null
+    private var continuousMode = false
     private val inFlightAddresses = mutableSetOf<String>()
-    private val results = linkedMapOf<String, DiscoveredBlePc>()
+    private val results = ConcurrentHashMap<String, DiscoveredBlePc>()
+
+    fun getCachedResults(): List<DiscoveredBlePc> =
+        results.values.sortedByDescending { it.rssi ?: Int.MIN_VALUE }
+
+    @SuppressLint("MissingPermission")
+    fun startContinuousScan() {
+        if (continuousMode) return
+        val bluetoothAdapter = adapter
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+            log("Bluetooth unavailable or disabled")
+            return
+        }
+        if (!BlePermissions.hasAll(appContext)) {
+            log("Missing BLE permissions")
+            return
+        }
+
+        continuousMode = true
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                handleScanResult(result)
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                log("Continuous BLE scan failed error=$errorCode")
+                stopScanInternal()
+            }
+        }
+
+        scanCallback = callback
+        val filters = listOf(
+            ScanFilter.Builder()
+                .setServiceUuid(ParcelUuid(SpaceDropBleUuids.SERVICE))
+                .build()
+        )
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
+        runCatching {
+            bluetoothAdapter.bluetoothLeScanner.startScan(filters, settings, callback)
+            log("Continuous BLE scan started")
+        }.onFailure { error ->
+            log("startContinuousScan failed: ${error.message}")
+            continuousMode = false
+            scanCallback = null
+        }
+    }
 
     suspend fun scanOnce(timeoutMs: Long = 10_000L): List<DiscoveredBlePc> {
-        if (adapter == null || !adapter.isEnabled) {
+        if (continuousMode) {
+            delayForCache(timeoutMs.coerceAtMost(3_000L))
+            return getCachedResults()
+        }
+
+        val bluetoothAdapter = adapter
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
             log("Bluetooth unavailable or disabled")
             return emptyList()
         }
@@ -59,7 +115,7 @@ class BlePcScanner(context: Context) {
                         log("BLE scan failed error=$errorCode")
                         stopScanInternal()
                         if (continuation.isActive) {
-                            continuation.resume(results.values.toList())
+                            continuation.resume(getCachedResults())
                         }
                     }
                 }
@@ -79,7 +135,7 @@ class BlePcScanner(context: Context) {
                 }
 
                 runCatching {
-                    adapter.bluetoothLeScanner.startScan(filters, settings, callback)
+                    bluetoothAdapter.bluetoothLeScanner.startScan(filters, settings, callback)
                 }.onFailure { error ->
                     log("startScan failed: ${error.message}")
                     if (continuation.isActive) {
@@ -91,11 +147,11 @@ class BlePcScanner(context: Context) {
                 mainHandler.postDelayed({
                     stopScanInternal()
                     if (continuation.isActive) {
-                        continuation.resume(results.values.toList())
+                        continuation.resume(getCachedResults())
                     }
                 }, timeoutMs)
             }
-        } ?: results.values.toList()
+        } ?: getCachedResults()
     }
 
     fun stopScan() {
@@ -103,10 +159,15 @@ class BlePcScanner(context: Context) {
     }
 
     private fun stopScanInternal() {
+        continuousMode = false
         scanCallback?.let { callback ->
             runCatching { adapter?.bluetoothLeScanner?.stopScan(callback) }
         }
         scanCallback = null
+    }
+
+    private suspend fun delayForCache(timeoutMs: Long) {
+        kotlinx.coroutines.delay(timeoutMs)
     }
 
     @SuppressLint("MissingPermission")

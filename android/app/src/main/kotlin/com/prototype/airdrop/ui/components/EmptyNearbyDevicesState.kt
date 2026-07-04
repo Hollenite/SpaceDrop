@@ -50,7 +50,7 @@ fun EmptyNearbyDevicesState(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Make sure Prototype-airDrop is open on your Windows PC, or pair using QR code.",
+            text = "Make sure SpaceDrop is open on your Windows PC, or pair using QR code.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center

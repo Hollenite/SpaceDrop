@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.prototype.airdrop.core.model.TransferStatus
+import com.prototype.airdrop.core.util.ContentUriUtils
 import com.prototype.airdrop.ui.components.LiquidTransferProgressBar
 import com.prototype.airdrop.ui.components.PrimaryActionButton
 import com.prototype.airdrop.ui.components.SecondaryActionButton
@@ -61,9 +62,9 @@ fun TransferLabScreen(
                 android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         }
-        val name = uri.lastPathSegment ?: "file"
-        val size = context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
         val mime = context.contentResolver.getType(uri)
+        val name = ContentUriUtils.resolveDisplayName(context, uri, mime)
+        val size = context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
         viewModel.setSelectedFile(uri, name, size, mime)
     }
 
@@ -159,8 +160,8 @@ fun TransferLabScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             SecondaryActionButton(
-                text = "Choose image",
-                onClick = { filePicker.launch(arrayOf("image/*")) },
+                text = "Choose file",
+                onClick = { filePicker.launch(arrayOf("*/*")) },
                 enabled = !viewModel.isTransferring,
                 modifier = Modifier.fillMaxWidth()
             )

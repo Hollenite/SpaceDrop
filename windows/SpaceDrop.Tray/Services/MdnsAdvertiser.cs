@@ -10,7 +10,13 @@ public sealed class MdnsAdvertiser : IAsyncDisposable
     private ServiceDiscovery? _serviceDiscovery;
     private ServiceProfile? _profile;
 
-    public Task StartAsync(string hostname, string deviceId, string ip, int port, CancellationToken cancellationToken)
+    public Task StartAsync(
+        string hostname,
+        string deviceId,
+        string ip,
+        int port,
+        string? bssid,
+        CancellationToken cancellationToken)
     {
         _ = cancellationToken;
         StopAsync().GetAwaiter().GetResult();
@@ -27,11 +33,16 @@ public sealed class MdnsAdvertiser : IAsyncDisposable
             new[] { IPAddress.Parse(ip) });
         _profile.AddProperty("device_id", deviceId);
         _profile.AddProperty("version", "1");
+        if (!string.IsNullOrWhiteSpace(bssid))
+        {
+            _profile.AddProperty("bssid", bssid);
+        }
 
         _serviceDiscovery.Advertise(_profile);
 
+        var bssidNote = string.IsNullOrWhiteSpace(bssid) ? "no bssid" : $"bssid={bssid}";
         Console.WriteLine(
-            $"Registered mDNS service '{hostname}._spacedrop._tcp.local.' at {ip}:{port}");
+            $"Registered mDNS service '{hostname}._spacedrop._tcp.local.' at {ip}:{port} ({bssidNote})");
         return Task.CompletedTask;
     }
 
