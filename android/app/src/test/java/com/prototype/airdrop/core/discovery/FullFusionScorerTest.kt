@@ -1,6 +1,7 @@
 package com.prototype.airdrop.core.discovery
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -21,8 +22,8 @@ class FullFusionScorerTest {
 
         val (device, breakdown) = FullFusionScorer.score(candidate, phoneBssid = null)
 
-        assertEquals(0.30f, device.confidence, 0.001f)
-        assertEquals(0.20f, breakdown.mdnsWeight, 0.001f)
+        assertEquals(0.25f, device.confidence, 0.001f)
+        assertEquals(0.15f, breakdown.mdnsWeight, 0.001f)
         assertEquals(0.10f, breakdown.hostWeight, 0.001f)
         assertEquals(false, breakdown.bssidMatch)
     }
@@ -42,9 +43,10 @@ class FullFusionScorerTest {
 
         val (device, breakdown) = FullFusionScorer.score(candidate, phoneBssid = "aa:bb:cc:dd:ee:ff")
 
-        assertTrue(device.confidence > 0.5f)
+        // mDNS 0.15 + host 0.10 + BSSID 0.20 = 0.45
+        assertEquals(0.45f, device.confidence, 0.001f)
         assertEquals(true, breakdown.bssidMatch)
-        assertEquals(0.25f, breakdown.bssidWeight, 0.001f)
+        assertEquals(0.20f, breakdown.bssidWeight, 0.001f)
     }
 
     @Test
@@ -62,8 +64,57 @@ class FullFusionScorerTest {
 
         val (device, breakdown) = FullFusionScorer.score(candidate, phoneBssid = "aa:bb:cc:dd:ee:ff")
 
-        assertTrue(device.confidence >= 0.8f)
-        assertEquals(0.10f, breakdown.agreementWeight, 0.001f)
+        // BLE(-70) 0.25 + mDNS 0.15 + agreement 0.05 + BSSID 0.20 + host 0.10 = 0.75
+        assertEquals(0.75f, device.confidence, 0.001f)
+        assertEquals(0.05f, breakdown.agreementWeight, 0.001f)
+    }
+
+    @Test
+    fun acousticMatch_boostsCorroboratedCandidate() {
+        val base = MergedDiscoveryCandidate(
+            deviceId = "pc-1",
+            name = "Office PC",
+            host = "192.168.1.10",
+            port = 58392,
+            rssi = -60,
+            hasBle = true,
+            hasMdns = true,
+            pcBssid = "aa:bb:cc:dd:ee:ff"
+        )
+
+        val (withoutAcoustic, _) = FullFusionScorer.score(base, phoneBssid = "aa:bb:cc:dd:ee:ff")
+        val (withAcoustic, breakdown) = FullFusionScorer.score(
+            base.copy(acousticTokenMatch = true),
+            phoneBssid = "aa:bb:cc:dd:ee:ff"
+        )
+
+        assertEquals(0.15f, breakdown.acousticWeight, 0.001f)
+        assertTrue(breakdown.acousticMatch)
+        assertTrue(withAcoustic.confidence > withoutAcoustic.confidence)
+        // Full stack tops out at exactly 1.0
+        assertEquals(1.0f, withAcoustic.confidence, 0.001f)
+        assertTrue(breakdown.signalSummary.contains("Acoustic"))
+    }
+
+    @Test
+    fun acousticMatch_neverAppliesWithoutBleOrMdns() {
+        // Defensive: a candidate flagged acoustic but with no BLE/mDNS must not be boosted.
+        val candidate = MergedDiscoveryCandidate(
+            deviceId = "pc-1",
+            name = "Office PC",
+            host = "192.168.1.10",
+            port = 58392,
+            rssi = null,
+            hasBle = false,
+            hasMdns = false,
+            pcBssid = null,
+            acousticTokenMatch = true
+        )
+
+        val (_, breakdown) = FullFusionScorer.score(candidate, phoneBssid = null)
+
+        assertEquals(0f, breakdown.acousticWeight, 0.001f)
+        assertFalse(breakdown.acousticMatch)
     }
 
     @Test

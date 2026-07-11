@@ -1,6 +1,5 @@
 package com.prototype.airdrop.core.connectivity
 
-import android.os.Build
 import android.util.Log
 import org.json.JSONObject
 import java.net.ConnectException
@@ -9,7 +8,8 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 
 class SpaceDropHandshakeClient(
-    private val deviceIdStore: DeviceIdStore
+    private val deviceIdStore: DeviceIdStore,
+    private val deviceNameProvider: () -> String = { DeviceNameStore.defaultName() }
 ) {
 
     fun ping(host: String, port: Int = HANDSHAKE_PORT): ConnectionResult {
@@ -19,7 +19,7 @@ class SpaceDropHandshakeClient(
             socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
             socket.soTimeout = READ_TIMEOUT_MS
 
-            val deviceName = Build.MODEL ?: "Android Device"
+            val deviceName = deviceNameProvider()
             val deviceId = deviceIdStore.getOrCreateDeviceId()
 
             val pingJson = JSONObject().apply {

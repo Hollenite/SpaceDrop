@@ -1,7 +1,6 @@
 package com.prototype.airdrop.ui.screens.settings
 
 import android.app.Application
-import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.prototype.airdrop.core.connectivity.NsdNearbyDeviceRepository
@@ -32,16 +31,17 @@ class TransferLabViewModel(application: Application) : AndroidViewModel(applicat
     val session = transferEngine.session
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    private var selectedFileUri: Uri? = null
-    private var selectedFileName: String = ""
-    private var selectedFileSize: Long? = null
-    private var selectedMime: String? = null
+    private var selectedItems: List<TransferItem> = emptyList()
 
     val hasSelectedFile: Boolean
-        get() = selectedFileUri != null && selectedFileUri != Uri.EMPTY
+        get() = selectedItems.isNotEmpty()
 
     val selectedFileLabel: String
-        get() = if (hasSelectedFile) selectedFileName else "No file selected"
+        get() = when {
+            selectedItems.isEmpty() -> "No file selected"
+            selectedItems.size == 1 -> selectedItems.first().displayName
+            else -> "${selectedItems.size} files selected"
+        }
 
     init {
         refresh()
@@ -51,25 +51,16 @@ class TransferLabViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch { nsdRepository.refresh() }
     }
 
-    fun setSelectedFile(uri: Uri, displayName: String, sizeBytes: Long?, mimeType: String?) {
-        selectedFileUri = uri
-        selectedFileName = displayName
-        selectedFileSize = sizeBytes
-        selectedMime = mimeType
+    fun setSelectedFiles(items: List<TransferItem>) {
+        selectedItems = items
     }
 
     fun sendToFirstDevice() {
         val device = devices.value.firstOrNull() ?: return
-        val uri = selectedFileUri ?: return
-        val item = TransferItem(
-            contentUri = uri,
-            displayName = selectedFileName.ifBlank { "file" },
-            mimeType = selectedMime,
-            sizeBytes = selectedFileSize
-        )
+        if (selectedItems.isEmpty()) return
         transferEngine.start(
             device = device,
-            items = listOf(item),
+            items = selectedItems,
             contentResolver = getApplication<Application>().contentResolver
         )
     }

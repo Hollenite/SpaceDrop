@@ -14,9 +14,16 @@ data class TransferSession(
     val targetDevice: NearbyDevice,
     val items: List<TransferItem>,
     val status: TransferStatus,
+    /** Overall progress across all files (aggregate bytes). */
     val progressPercent: Int,
     val speedText: String,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** Total files in this batch. */
+    val totalFiles: Int = 1,
+    /** 1-based index of the file currently being sent. */
+    val currentFileIndex: Int = 1,
+    /** Name of the file currently being sent, if known. */
+    val currentFileName: String? = null
 )
 
 enum class TransferStatus {

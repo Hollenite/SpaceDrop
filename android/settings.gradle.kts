@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PrototypeAirDrop"
 include(":app")
+include(":fsk-core")

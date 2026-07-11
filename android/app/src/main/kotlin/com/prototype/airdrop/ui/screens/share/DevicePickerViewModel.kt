@@ -49,9 +49,6 @@ class DevicePickerViewModel(application: Application) : AndroidViewModel(applica
     val pendingItems: List<TransferItem>
         get() = AppState.pendingTransferItems
 
-    val multiFileWarning: Boolean
-        get() = pendingItems.size > 1
-
     init {
         observeSuccessfulTransfer()
     }
@@ -131,7 +128,6 @@ class DevicePickerViewModel(application: Application) : AndroidViewModel(applica
 
     fun startTransfer(device: NearbyDevice) {
         if (_activeDeviceId.value != null) return
-        if (multiFileWarning) return
         if (pendingItems.isEmpty()) return
         if (pendingItems.first().contentUri == Uri.EMPTY) return
 

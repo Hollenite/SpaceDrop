@@ -9,6 +9,7 @@ public sealed class SpaceDropHostService : IAsyncDisposable
     private readonly LocalIpSelector _ipSelector = new();
     private readonly MdnsAdvertiser _mdns = new();
     private readonly BleGattService _ble = new();
+    private readonly AcousticEmitterService _acoustic = new();
     private TcpTransferServer? _tcp;
     private CancellationTokenSource? _cts;
     private string? _currentIp;
@@ -23,6 +24,9 @@ public sealed class SpaceDropHostService : IAsyncDisposable
 
         _tcp = new TcpTransferServer(deviceId, hostname);
         await _tcp.StartAsync(_cts.Token);
+
+        // Continuously emit the 19 kHz FSK device-id token for acoustic corroboration on the phone.
+        _acoustic.Start(deviceId, _cts.Token);
 
         await RefreshNetworkAsync(deviceId, hostname);
 
@@ -119,6 +123,7 @@ public sealed class SpaceDropHostService : IAsyncDisposable
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
         _cts?.Cancel();
 
+        await _acoustic.StopAsync();
         await _mdns.StopAsync();
         await _ble.StopAsync();
         if (_tcp is not null)
@@ -131,6 +136,7 @@ public sealed class SpaceDropHostService : IAsyncDisposable
     {
         await StopAsync();
         _cts?.Dispose();
+        await _acoustic.DisposeAsync();
         await _mdns.DisposeAsync();
         await _ble.DisposeAsync();
         if (_tcp is not null)

@@ -25,6 +25,8 @@ class BleDiscoveryLabViewModel(application: Application) : AndroidViewModel(appl
     val logLines: StateFlow<List<String>> = _logLines.asStateFlow()
 
     init {
+        // Run the mic listener while the lab is open so acoustic corroboration can appear.
+        repository.ensureAcousticListening()
         refresh()
     }
 
@@ -44,9 +46,9 @@ class BleDiscoveryLabViewModel(application: Application) : AndroidViewModel(appl
                             "prox=${device.proximityState} ble=${fusion.hasBle} mdns=${fusion.hasMdns} " +
                             "rssi=${fusion.rssi} wifi=${fusion.bssidMatch} " +
                             "phoneBssid=${fusion.phoneBssid} pcBssid=${fusion.pcBssid} " +
-                            "signals=${fusion.signalSummary} " +
+                            "signals=${fusion.signalSummary} acoustic=${fusion.acousticMatch} " +
                             "wBle=${fusion.bleRssiWeight} wMdns=${fusion.mdnsWeight} wAgree=${fusion.agreementWeight} " +
-                            "wBssid=${fusion.bssidWeight} wHost=${fusion.hostWeight}"
+                            "wBssid=${fusion.bssidWeight} wHost=${fusion.hostWeight} wAcoustic=${fusion.acousticWeight}"
                     )
                 }
             }

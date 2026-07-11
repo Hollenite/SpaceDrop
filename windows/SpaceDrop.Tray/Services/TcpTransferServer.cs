@@ -50,7 +50,7 @@ public sealed class TcpTransferServer : IAsyncDisposable
             {
                 var client = await _listener.AcceptTcpClientAsync(cancellationToken);
                 var peerIp = ((IPEndPoint)client.Client.RemoteEndPoint!).Address.ToString();
-                _ = Task.Run(() => HandleConnectionAsync(client, peerIp), cancellationToken);
+                _ = Task.Run(() => HandleConnectionAsync(client, peerIp, cancellationToken), cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -63,7 +63,7 @@ public sealed class TcpTransferServer : IAsyncDisposable
         }
     }
 
-    private async Task HandleConnectionAsync(TcpClient client, string peerIp)
+    private async Task HandleConnectionAsync(TcpClient client, string peerIp, CancellationToken cancellationToken)
     {
         using var _ = client;
         Console.WriteLine($"Connection attempt from {peerIp}");
@@ -71,10 +71,12 @@ public sealed class TcpTransferServer : IAsyncDisposable
         try
         {
             await using var stream = client.GetStream();
-            using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+            // Control lines are read byte-by-byte off the raw stream (not via StreamReader) so the
+            // reader can never buffer ahead into the following file's raw bytes — important now that a
+            // single connection carries multiple FILE_META -> bytes -> FILE_ACK cycles.
             await using var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
 
-            var line = await reader.ReadLineAsync();
+            var line = await ReadLineAsync(stream, cancellationToken);
             if (string.IsNullOrWhiteSpace(line))
             {
                 Console.WriteLine($"Empty request from {peerIp}");
@@ -97,6 +99,7 @@ public sealed class TcpTransferServer : IAsyncDisposable
 
             var peerName = ping.TryGetProperty("device_name", out var nameEl) ? nameEl.GetString() : "unknown";
             var peerId = ping.TryGetProperty("device_id", out var idEl) ? idEl.GetString() : "unknown";
+            var expectedCount = ping.TryGetProperty("count", out var countEl) && countEl.TryGetInt32(out var c) ? c : 1;
 
             var pong = new
             {
@@ -106,11 +109,12 @@ public sealed class TcpTransferServer : IAsyncDisposable
                 token = SpaceDropProtocol.SharedToken
             };
             await writer.WriteLineAsync(JsonSerializer.Serialize(pong));
-            Console.WriteLine($"Connected to {peerName} ({peerId})");
+            Console.WriteLine($"Connected to {peerName} ({peerId}) — expecting {expectedCount} file(s)");
 
+            var received = 0;
             while (true)
             {
-                var nextLine = await reader.ReadLineAsync();
+                var nextLine = await ReadLineAsync(stream, cancellationToken);
                 if (string.IsNullOrWhiteSpace(nextLine)) break;
 
                 using var nextDoc = JsonDocument.Parse(nextLine);
@@ -118,7 +122,9 @@ public sealed class TcpTransferServer : IAsyncDisposable
                 var msgType = next.GetProperty("type").GetString();
                 if (msgType == "FILE_META")
                 {
-                    await HandleFileMetaAsync(next, stream, writer, peerIp);
+                    await HandleFileMetaAsync(next, stream, writer, peerIp, received + 1, expectedCount);
+                    received++;
+                    if (received >= expectedCount) break;
                 }
                 else
                 {
@@ -126,6 +132,8 @@ public sealed class TcpTransferServer : IAsyncDisposable
                     break;
                 }
             }
+
+            Console.WriteLine($"Connection from {peerName} complete — received {received}/{expectedCount} file(s)");
         }
         catch (Exception ex)
         {
@@ -133,11 +141,32 @@ public sealed class TcpTransferServer : IAsyncDisposable
         }
     }
 
+    /// <summary>Reads a single '\n'-terminated UTF-8 line off the raw stream without over-buffering.</summary>
+    private static async Task<string?> ReadLineAsync(NetworkStream stream, CancellationToken cancellationToken)
+    {
+        var bytes = new List<byte>(128);
+        var one = new byte[1];
+        while (true)
+        {
+            var read = await stream.ReadAsync(one.AsMemory(0, 1), cancellationToken);
+            if (read == 0)
+            {
+                return bytes.Count == 0 ? null : Encoding.UTF8.GetString(bytes.ToArray());
+            }
+            if (one[0] == (byte)'\n') break;
+            if (one[0] == (byte)'\r') continue;
+            bytes.Add(one[0]);
+        }
+        return Encoding.UTF8.GetString(bytes.ToArray());
+    }
+
     private async Task HandleFileMetaAsync(
         JsonElement message,
         NetworkStream stream,
         StreamWriter writer,
-        string peerIp)
+        string peerIp,
+        int fileIndex,
+        int fileCount)
     {
         if (message.GetProperty("token").GetString() != SpaceDropProtocol.SharedToken)
         {
@@ -164,8 +193,8 @@ public sealed class TcpTransferServer : IAsyncDisposable
             return;
         }
 
-        var dest = Path.Combine(_receivedDir, name);
-        Console.WriteLine($"Receiving {name} ({size} bytes) from {peerIp}");
+        var dest = UniqueDestination(Path.Combine(_receivedDir, name));
+        Console.WriteLine($"Receiving file {fileIndex}/{fileCount}: {name} ({size} bytes) from {peerIp}");
 
         try
         {
@@ -210,6 +239,20 @@ public sealed class TcpTransferServer : IAsyncDisposable
                 error = ex.Message
             }));
             Console.WriteLine($"File receive failed from {peerIp}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Avoids clobbering an existing file (or an earlier file in the same batch).</summary>
+    private static string UniqueDestination(string path)
+    {
+        if (!File.Exists(path)) return path;
+        var dir = Path.GetDirectoryName(path) ?? string.Empty;
+        var stem = Path.GetFileNameWithoutExtension(path);
+        var ext = Path.GetExtension(path);
+        for (var i = 1; ; i++)
+        {
+            var candidate = Path.Combine(dir, $"{stem} ({i}){ext}");
+            if (!File.Exists(candidate)) return candidate;
         }
     }
 

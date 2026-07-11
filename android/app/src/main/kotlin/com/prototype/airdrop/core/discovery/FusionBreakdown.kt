@@ -14,6 +14,8 @@ data class FusionBreakdown(
 
     val hostWeight: Float,
 
+    val acousticWeight: Float = 0f,
+
     val rssi: Int?,
 
     val hasBle: Boolean,
@@ -21,6 +23,8 @@ data class FusionBreakdown(
     val hasMdns: Boolean,
 
     val bssidMatch: Boolean,
+
+    val acousticMatch: Boolean = false,
 
     val signalSummary: String,
 

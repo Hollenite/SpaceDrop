@@ -26,7 +26,10 @@ data class MergedDiscoveryCandidate(
 
     val hasMdns: Boolean,
 
-    val pcBssid: String? = null
+    val pcBssid: String? = null,
+
+    /** True when this BLE/mDNS candidate's device-id token was heard acoustically (Step 3). */
+    val acousticTokenMatch: Boolean = false
 
 )
 

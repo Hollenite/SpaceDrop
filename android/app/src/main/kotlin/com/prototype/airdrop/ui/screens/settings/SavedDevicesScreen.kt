@@ -11,22 +11,28 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.DevicesOther
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.prototype.airdrop.core.model.NearbyDevice
 import com.prototype.airdrop.core.model.TrustState
 import com.prototype.airdrop.ui.components.DeviceCard
 
@@ -38,6 +44,31 @@ fun SavedDevicesScreen(
 ) {
     val allDevices by viewModel.devices.collectAsStateWithLifecycle()
     val pairedDevices = allDevices.filter { it.trustState == TrustState.PAIRED }
+
+    var managed by remember { mutableStateOf<NearbyDevice?>(null) }
+
+    managed?.let { device ->
+        AlertDialog(
+            onDismissRequest = { managed = null },
+            title = { Text(device.name) },
+            text = {
+                Text(
+                    buildString {
+                        appendLine("Host: ${device.host ?: "unknown"}:${device.port}")
+                        appendLine("Status: ${device.proximityState}")
+                        appendLine()
+                        append(
+                            "Pairing management (rename / forget) isn't implemented yet — " +
+                                "device trust is still a prototype placeholder."
+                        )
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { managed = null }) { Text("Close") }
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -90,7 +121,7 @@ fun SavedDevicesScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(pairedDevices, key = { it.id }) { device ->
-                    DeviceCard(device = device, onClick = { /* manage action placeholder */ })
+                    DeviceCard(device = device, onClick = { managed = device })
                 }
             }
         }

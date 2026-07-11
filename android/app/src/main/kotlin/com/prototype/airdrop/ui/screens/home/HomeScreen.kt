@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.prototype.airdrop.core.acoustic.AcousticPermissions
 import com.prototype.airdrop.core.connectivity.WifiPermissions
 import com.prototype.airdrop.core.connectivity.ble.BlePermissions
 import com.prototype.airdrop.core.model.TrustState
@@ -62,6 +63,7 @@ fun HomeScreen(
         val needed = buildList {
             if (!BlePermissions.hasAll(context)) addAll(BlePermissions.requiredPermissions())
             if (!WifiPermissions.hasAll(context)) addAll(WifiPermissions.requiredPermissions())
+            if (!AcousticPermissions.hasAll(context)) addAll(AcousticPermissions.requiredPermissions())
         }.distinct().toTypedArray()
         if (needed.isNotEmpty()) {
             permissionLauncher.launch(needed)
@@ -126,7 +128,14 @@ fun HomeScreen(
 
                     EmptyNearbyDevicesState(
                         onScanQr = onShowQrPairing,
-                        onHowItWorks = { /* placeholder */ },
+                        onHowItWorks = {
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    "SpaceDrop finds nearby PCs over Bluetooth + Wi-Fi, then " +
+                                        "confirms them by a quiet ultrasonic tone."
+                                )
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(0.62f)

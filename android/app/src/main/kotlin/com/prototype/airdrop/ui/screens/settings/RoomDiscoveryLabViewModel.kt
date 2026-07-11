@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.prototype.airdrop.BuildConfig
 import com.prototype.airdrop.core.connectivity.ConnectionResult
 import com.prototype.airdrop.core.connectivity.DeviceIdStore
+import com.prototype.airdrop.core.connectivity.DeviceNameStore
 import com.prototype.airdrop.core.connectivity.NetworkUtils
 import com.prototype.airdrop.core.connectivity.NsdServiceDiscoverer
 import com.prototype.airdrop.core.connectivity.SpaceDropHandshakeClient
@@ -30,8 +31,12 @@ enum class ConnectionUiState {
 class RoomDiscoveryLabViewModel(application: Application) : AndroidViewModel(application) {
 
     private val deviceIdStore = DeviceIdStore(application)
+    private val deviceNameStore = DeviceNameStore(application)
     private val nsdDiscoverer = NsdServiceDiscoverer(application)
-    private val handshakeClient = SpaceDropHandshakeClient(deviceIdStore)
+    private val handshakeClient = SpaceDropHandshakeClient(
+        deviceIdStore,
+        deviceNameProvider = { deviceNameStore.getName() }
+    )
 
     private val _uiState = MutableStateFlow(ConnectionUiState.Idle)
     val uiState: StateFlow<ConnectionUiState> = _uiState.asStateFlow()
