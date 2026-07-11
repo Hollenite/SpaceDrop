@@ -16,6 +16,7 @@ public sealed class MdnsAdvertiser : IAsyncDisposable
         string ip,
         int port,
         string? bssid,
+        string? fingerprint,
         CancellationToken cancellationToken)
     {
         _ = cancellationToken;
@@ -32,7 +33,11 @@ public sealed class MdnsAdvertiser : IAsyncDisposable
             (ushort)port,
             new[] { IPAddress.Parse(ip) });
         _profile.AddProperty("device_id", deviceId);
-        _profile.AddProperty("version", "1");
+        _profile.AddProperty("version", SpaceDropProtocol.ProtocolVersion.ToString());
+        if (!string.IsNullOrWhiteSpace(fingerprint))
+        {
+            _profile.AddProperty("fp", fingerprint.ToLowerInvariant());
+        }
         if (!string.IsNullOrWhiteSpace(bssid))
         {
             _profile.AddProperty("bssid", bssid);

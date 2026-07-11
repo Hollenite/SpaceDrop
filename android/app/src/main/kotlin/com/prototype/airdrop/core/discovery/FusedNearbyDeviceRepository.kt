@@ -8,6 +8,7 @@ import com.prototype.airdrop.core.connectivity.NsdServiceDiscoverer
 import com.prototype.airdrop.core.connectivity.WifiNetworkSnapshot
 import com.prototype.airdrop.core.connectivity.ble.BlePcScanner
 import com.prototype.airdrop.core.model.NearbyDevice
+import com.prototype.airdrop.core.security.PairedPeerStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -35,11 +36,13 @@ class FusedNearbyDeviceRepository(
     private val appContext = context.applicationContext
     private val nsdDiscoverer = NsdServiceDiscoverer(appContext)
     private val usageStore = DeviceUsageStore(appContext)
+    private val peerStore = PairedPeerStore(appContext)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val refreshMutex = Mutex()
     private val coalesceMutex = Mutex()
     private var periodicJob: Job? = null
+    private var acousticArmJob: Job? = null
     private var inFlightRefresh: Deferred<Unit>? = null
 
     private var lastRefreshCompletedAtMs: Long = 0L
@@ -123,12 +126,33 @@ class FusedNearbyDeviceRepository(
                 refreshQuick()
             }
         }
+        acousticArmJob = scope.launch {
+            while (isActive) {
+                armNearbyAcoustics()
+                delay(15_000L)
+            }
+        }
     }
 
     fun stopPeriodicRefresh() {
         periodicJob?.cancel()
         periodicJob = null
+        acousticArmJob?.cancel()
+        acousticArmJob = null
         acousticListener?.stop()
+        bleScanner.getCachedResults().forEach { pc ->
+            if (pc.bluetoothAddress.isNotBlank()) {
+                bleScanner.disarmAcoustic(pc.bluetoothAddress)
+            }
+        }
+    }
+
+    private fun armNearbyAcoustics() {
+        bleScanner.getCachedResults().forEach { pc ->
+            if (pc.bluetoothAddress.isNotBlank()) {
+                bleScanner.armAcoustic(pc.bluetoothAddress, durationMs = 20_000)
+            }
+        }
     }
 
     private suspend fun refreshInternal(fullBleScan: Boolean) {
@@ -169,12 +193,16 @@ class FusedNearbyDeviceRepository(
 
                 val mergedRaw = DiscoveryMerger.merge(bleResults, mdnsResults)
                 val merged = applyAcousticCorroboration(mergedRaw)
-                val scored = FullFusionScorer.scoreAll(merged, phoneBssid)
+                val pairedIds = peerStore.list().map { it.deviceId }.toSet()
+                val scored = FullFusionScorer.scoreAll(merged, phoneBssid, pairedIds)
                 _fusionBreakdown.value = scored
                 val deviceList = scored.map { it.first }
                 _devices.value = deviceList
                 _rankedDevices.value = DeviceRanking.rank(deviceList, usageStore)
                 lastRefreshCompletedAtMs = System.currentTimeMillis()
+                if (periodicJob?.isActive == true) {
+                    armNearbyAcoustics()
+                }
 
                 if (_devices.value.isEmpty()) {
                     _errorMessage.value = when {

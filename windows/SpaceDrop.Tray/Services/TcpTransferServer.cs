@@ -1,5 +1,8 @@
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using SpaceDrop.Tray.Protocol;
@@ -8,18 +11,35 @@ namespace SpaceDrop.Tray.Services;
 
 public sealed class TcpTransferServer : IAsyncDisposable
 {
-    private readonly string _deviceId;
+    private readonly IdentityKeyStore _identity;
+    private readonly PairedPeerStore _peers;
     private readonly string _hostname;
     private readonly string _receivedDir;
+    private readonly Func<bool> _isPairingWindowOpen;
+    private readonly Func<string, string, bool> _confirmPairing;
+    private readonly Func<string, string, long, bool> _confirmReceive;
+    private readonly Action<int>? _onAcousticArm;
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
 
     public string ReceivedDirectory { get; }
 
-    public TcpTransferServer(string deviceId, string hostname)
+    public TcpTransferServer(
+        IdentityKeyStore identity,
+        PairedPeerStore peers,
+        string hostname,
+        Func<bool> isPairingWindowOpen,
+        Func<string, string, bool> confirmPairing,
+        Func<string, string, long, bool> confirmReceive,
+        Action<int>? onAcousticArm = null)
     {
-        _deviceId = deviceId;
+        _identity = identity;
+        _peers = peers;
         _hostname = hostname;
+        _isPairingWindowOpen = isPairingWindowOpen;
+        _confirmPairing = confirmPairing;
+        _confirmReceive = confirmReceive;
+        _onAcousticArm = onAcousticArm;
         _receivedDir = ReceivedPathResolver.Resolve();
         Directory.CreateDirectory(_receivedDir);
         ReceivedDirectory = _receivedDir;
@@ -29,15 +49,10 @@ public sealed class TcpTransferServer : IAsyncDisposable
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         await StopAsync();
-
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _listener = new TcpListener(IPAddress.Any, SpaceDropProtocol.Port);
         _listener.Start();
-        Console.WriteLine($"Listening on port {SpaceDropProtocol.Port}");
-        Console.WriteLine(
-            "If manual connect fails instantly, allow inbound TCP port " +
-            $"{SpaceDropProtocol.Port} through Windows Firewall.");
-
+        Console.WriteLine($"TLS listening on port {SpaceDropProtocol.Port}");
         _ = AcceptLoopAsync(_cts.Token);
         await Task.CompletedTask;
     }
@@ -52,88 +67,164 @@ public sealed class TcpTransferServer : IAsyncDisposable
                 var peerIp = ((IPEndPoint)client.Client.RemoteEndPoint!).Address.ToString();
                 _ = Task.Run(() => HandleConnectionAsync(client, peerIp, cancellationToken), cancellationToken);
             }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Accept error: {ex.Message}");
-            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex) { Console.WriteLine($"Accept error: {ex.Message}"); }
         }
     }
 
     private async Task HandleConnectionAsync(TcpClient client, string peerIp, CancellationToken cancellationToken)
     {
         using var _ = client;
-        Console.WriteLine($"Connection attempt from {peerIp}");
+        Console.WriteLine($"Connection from {peerIp}");
 
         try
         {
-            await using var stream = client.GetStream();
-            // Control lines are read byte-by-byte off the raw stream (not via StreamReader) so the
-            // reader can never buffer ahead into the following file's raw bytes — important now that a
-            // single connection carries multiple FILE_META -> bytes -> FILE_ACK cycles.
-            await using var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
+            await using var network = client.GetStream();
 
-            var line = await ReadLineAsync(stream, cancellationToken);
-            if (string.IsNullOrWhiteSpace(line))
+            // Plaintext acoustic arm fallback (first line JSON) before TLS — rate-limited speaker only.
+            if (await TryHandlePlainAcousticArmAsync(client, network, peerIp, cancellationToken))
             {
-                Console.WriteLine($"Empty request from {peerIp}");
                 return;
             }
 
-            using var pingDoc = JsonDocument.Parse(line);
-            var ping = pingDoc.RootElement;
-            if (ping.GetProperty("type").GetString() != "PING")
+            await using var ssl = new SslStream(network, leaveInnerStreamOpen: false, ValidateClientCertificate);
+            var options = new SslServerAuthenticationOptions
             {
-                Console.WriteLine($"Unexpected message type from {peerIp}");
+                ServerCertificate = _identity.Certificate,
+                ClientCertificateRequired = true,
+                EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck
+            };
+            await ssl.AuthenticateAsServerAsync(options, cancellationToken);
+
+            var clientCert = ssl.RemoteCertificate as X509Certificate2
+                ?? (ssl.RemoteCertificate != null ? new X509Certificate2(ssl.RemoteCertificate) : null);
+            if (clientCert is null)
+            {
+                Console.WriteLine($"Rejected {peerIp}: no client certificate");
                 return;
             }
 
-            if (ping.GetProperty("token").GetString() != SpaceDropProtocol.SharedToken)
+            var clientFp = IdentityKeyStore.FingerprintOf(clientCert);
+            var paired = _peers.FindByFingerprint(clientFp);
+            var pairingOpen = _isPairingWindowOpen();
+
+            if (paired is null && !pairingOpen)
             {
-                Console.WriteLine($"Warning: rejected connection from {peerIp} — invalid token");
+                Console.WriteLine($"Rejected {peerIp}: unpaired fingerprint {clientFp[..16]}…");
                 return;
             }
 
-            var peerName = ping.TryGetProperty("device_name", out var nameEl) ? nameEl.GetString() : "unknown";
-            var peerId = ping.TryGetProperty("device_id", out var idEl) ? idEl.GetString() : "unknown";
-            var expectedCount = ping.TryGetProperty("count", out var countEl) && countEl.TryGetInt32(out var c) ? c : 1;
+            await using var writer = new StreamWriter(ssl, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
+            var line = await ReadLineAsync(ssl, cancellationToken);
+            if (string.IsNullOrWhiteSpace(line)) return;
 
-            var pong = new
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            var type = root.GetProperty("type").GetString();
+
+            if (type == "PAIR_REQUEST")
+            {
+                await HandlePairRequestAsync(root, clientFp, writer, peerIp);
+                return;
+            }
+
+            if (type == "ACOUSTIC_ARM")
+            {
+                var ms = root.TryGetProperty("duration_ms", out var d) && d.TryGetInt32(out var v)
+                    ? v : SpaceDropProtocol.DefaultAcousticArmMs;
+                ms = Math.Clamp(ms, 1000, SpaceDropProtocol.MaxAcousticArmMs);
+                _onAcousticArm?.Invoke(ms);
+                await writer.WriteLineAsync(JsonSerializer.Serialize(new { type = "ACOUSTIC_ACK", ok = true }));
+                return;
+            }
+
+            if (type != "PING")
+            {
+                Console.WriteLine($"Unexpected type from {peerIp}: {type}");
+                return;
+            }
+
+            if (paired is null)
+            {
+                await writer.WriteLineAsync(JsonSerializer.Serialize(new
+                {
+                    type = "PONG",
+                    ok = false,
+                    error = "not paired"
+                }));
+                return;
+            }
+
+            var peerName = root.TryGetProperty("device_name", out var nameEl)
+                ? nameEl.GetString() ?? paired.DisplayName
+                : paired.DisplayName;
+            var peerId = root.TryGetProperty("device_id", out var idEl)
+                ? idEl.GetString() ?? paired.DeviceId
+                : paired.DeviceId;
+            var expectedCount = root.TryGetProperty("count", out var countEl) && countEl.TryGetInt32(out var c)
+                ? c : 1;
+
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new
             {
                 type = "PONG",
+                ok = true,
                 device_name = _hostname,
-                device_id = _deviceId,
-                token = SpaceDropProtocol.SharedToken
-            };
-            await writer.WriteLineAsync(JsonSerializer.Serialize(pong));
-            Console.WriteLine($"Connected to {peerName} ({peerId}) — expecting {expectedCount} file(s)");
+                device_id = _identity.DeviceId,
+                fingerprint = _identity.FingerprintHex
+            }));
+
+            Console.WriteLine($"TLS transfer from {peerName} ({peerId}) — {expectedCount} file(s)");
 
             var received = 0;
-            while (true)
+            long batchBytes = 0;
+            while (received < expectedCount)
             {
-                var nextLine = await ReadLineAsync(stream, cancellationToken);
+                var nextLine = await ReadLineAsync(ssl, cancellationToken);
                 if (string.IsNullOrWhiteSpace(nextLine)) break;
 
                 using var nextDoc = JsonDocument.Parse(nextLine);
                 var next = nextDoc.RootElement;
-                var msgType = next.GetProperty("type").GetString();
-                if (msgType == "FILE_META")
+                if (next.GetProperty("type").GetString() != "FILE_META")
                 {
-                    await HandleFileMetaAsync(next, stream, writer, peerIp, received + 1, expectedCount);
-                    received++;
-                    if (received >= expectedCount) break;
-                }
-                else
-                {
-                    Console.WriteLine($"Unexpected message type from {peerIp}: {msgType}");
+                    Console.WriteLine($"Unexpected message: {next.GetProperty("type").GetString()}");
                     break;
                 }
+
+                var size = next.GetProperty("size").GetInt64();
+                batchBytes += Math.Max(0, size);
+                if (size > SpaceDropProtocol.MaxFileBytes || batchBytes > SpaceDropProtocol.MaxBatchBytes)
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new
+                    {
+                        type = "FILE_ACK",
+                        ok = false,
+                        error = "file or batch too large"
+                    }));
+                    break;
+                }
+
+                var fileName = next.GetProperty("name").GetString() ?? "file";
+                if (!paired.AlwaysAllow)
+                {
+                    var allowed = _confirmReceive(peerName, fileName, size);
+                    if (!allowed)
+                    {
+                        await writer.WriteLineAsync(JsonSerializer.Serialize(new
+                        {
+                            type = "FILE_ACK",
+                            ok = false,
+                            error = "declined by user"
+                        }));
+                        break;
+                    }
+                }
+
+                await HandleFileMetaAsync(next, ssl, writer, peerIp, received + 1, expectedCount);
+                received++;
             }
 
-            Console.WriteLine($"Connection from {peerName} complete — received {received}/{expectedCount} file(s)");
+            Console.WriteLine($"Transfer complete {received}/{expectedCount} from {peerName}");
         }
         catch (Exception ex)
         {
@@ -141,48 +232,130 @@ public sealed class TcpTransferServer : IAsyncDisposable
         }
     }
 
-    /// <summary>Reads a single '\n'-terminated UTF-8 line off the raw stream without over-buffering.</summary>
-    private static async Task<string?> ReadLineAsync(NetworkStream stream, CancellationToken cancellationToken)
+    /// <summary>
+    /// Peek: if the client sends plaintext JSON ACOUSTIC_ARM (not a TLS ClientHello), handle and close.
+    /// TLS ClientHello starts with 0x16.
+    /// </summary>
+    private async Task<bool> TryHandlePlainAcousticArmAsync(
+        TcpClient client,
+        NetworkStream network,
+        string peerIp,
+        CancellationToken cancellationToken)
     {
-        var bytes = new List<byte>(128);
-        var one = new byte[1];
-        while (true)
+        if (!network.DataAvailable) return false;
+        client.Client.Blocking = false;
+        var peek = new byte[1];
+        var got = client.Client.Receive(peek, 0, 1, SocketFlags.Peek);
+        client.Client.Blocking = true;
+        if (got <= 0) return false;
+        if (peek[0] == 0x16) return false; // TLS
+
+        var line = await ReadLineAsync(network, cancellationToken);
+        if (string.IsNullOrWhiteSpace(line)) return true;
+        try
         {
-            var read = await stream.ReadAsync(one.AsMemory(0, 1), cancellationToken);
-            if (read == 0)
-            {
-                return bytes.Count == 0 ? null : Encoding.UTF8.GetString(bytes.ToArray());
-            }
-            if (one[0] == (byte)'\n') break;
-            if (one[0] == (byte)'\r') continue;
-            bytes.Add(one[0]);
+            using var doc = JsonDocument.Parse(line);
+            if (doc.RootElement.GetProperty("type").GetString() != "ACOUSTIC_ARM") return true;
+            var ms = doc.RootElement.TryGetProperty("duration_ms", out var d) && d.TryGetInt32(out var v)
+                ? v : SpaceDropProtocol.DefaultAcousticArmMs;
+            ms = Math.Clamp(ms, 1000, SpaceDropProtocol.MaxAcousticArmMs);
+            _onAcousticArm?.Invoke(ms);
+            var ack = Encoding.UTF8.GetBytes(
+                JsonSerializer.Serialize(new { type = "ACOUSTIC_ACK", ok = true }) + "\n");
+            await network.WriteAsync(ack, cancellationToken);
+            Console.WriteLine($"Plain ACOUSTIC_ARM from {peerIp} for {ms} ms");
         }
-        return Encoding.UTF8.GetString(bytes.ToArray());
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Plain control parse failed from {peerIp}: {ex.Message}");
+        }
+        return true;
+    }
+
+    private bool ValidateClientCertificate(
+        object sender,
+        X509Certificate? certificate,
+        X509Chain? chain,
+        SslPolicyErrors sslPolicyErrors)
+    {
+        // We pin fingerprints ourselves; accept self-signed client certs.
+        return certificate is not null;
+    }
+
+    private async Task HandlePairRequestAsync(
+        JsonElement root,
+        string clientFp,
+        StreamWriter writer,
+        string peerIp)
+    {
+        if (!_isPairingWindowOpen())
+        {
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                type = "PAIR_RESULT",
+                ok = false,
+                error = "pairing window closed"
+            }));
+            return;
+        }
+
+        var deviceId = root.TryGetProperty("device_id", out var idEl) ? idEl.GetString() ?? "" : "";
+        var name = root.TryGetProperty("device_name", out var nameEl) ? nameEl.GetString() ?? "Phone" : "Phone";
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                type = "PAIR_RESULT",
+                ok = false,
+                error = "missing device_id"
+            }));
+            return;
+        }
+
+        var accepted = _confirmPairing(name, deviceId);
+        if (!accepted)
+        {
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                type = "PAIR_RESULT",
+                ok = false,
+                error = "declined"
+            }));
+            Console.WriteLine($"Pairing declined for {name} from {peerIp}");
+            return;
+        }
+
+        _peers.Upsert(new PairedPeer
+        {
+            DeviceId = deviceId,
+            Fingerprint = clientFp,
+            DisplayName = name,
+            PairedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            AlwaysAllow = true
+        });
+
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new
+        {
+            type = "PAIR_RESULT",
+            ok = true,
+            device_id = _identity.DeviceId,
+            device_name = _hostname,
+            fingerprint = _identity.FingerprintHex
+        }));
+        Console.WriteLine($"Paired with {name} ({deviceId}) fp={clientFp[..16]}…");
     }
 
     private async Task HandleFileMetaAsync(
         JsonElement message,
-        NetworkStream stream,
+        Stream stream,
         StreamWriter writer,
         string peerIp,
         int fileIndex,
         int fileCount)
     {
-        if (message.GetProperty("token").GetString() != SpaceDropProtocol.SharedToken)
-        {
-            await writer.WriteLineAsync(JsonSerializer.Serialize(new
-            {
-                type = "FILE_ACK",
-                ok = false,
-                error = "invalid token"
-            }));
-            Console.WriteLine($"Rejected FILE_META from {peerIp} — invalid token");
-            return;
-        }
-
         var name = SanitizeFilename(message.GetProperty("name").GetString() ?? "received_file");
         var size = message.GetProperty("size").GetInt64();
-        if (size < 0)
+        if (size < 0 || size > SpaceDropProtocol.MaxFileBytes)
         {
             await writer.WriteLineAsync(JsonSerializer.Serialize(new
             {
@@ -194,6 +367,17 @@ public sealed class TcpTransferServer : IAsyncDisposable
         }
 
         var dest = UniqueDestination(Path.Combine(_receivedDir, name));
+        if (!IsUnderReceivedDir(dest))
+        {
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                type = "FILE_ACK",
+                ok = false,
+                error = "invalid path"
+            }));
+            return;
+        }
+
         Console.WriteLine($"Receiving file {fileIndex}/{fileCount}: {name} ({size} bytes) from {peerIp}");
 
         try
@@ -205,10 +389,7 @@ public sealed class TcpTransferServer : IAsyncDisposable
             {
                 var toRead = (int)Math.Min(buffer.Length, remaining);
                 var read = await stream.ReadAsync(buffer.AsMemory(0, toRead));
-                if (read == 0)
-                {
-                    throw new EndOfStreamException($"Expected {size} bytes");
-                }
+                if (read == 0) throw new EndOfStreamException($"Expected {size} bytes");
                 await fileStream.WriteAsync(buffer.AsMemory(0, read));
                 remaining -= read;
             }
@@ -220,15 +401,6 @@ public sealed class TcpTransferServer : IAsyncDisposable
                 path = dest
             }));
             Console.WriteLine($"Saved to {dest}");
-            // #region agent log
-            DebugAgentLog.Write("H5", "TcpTransferServer.cs:HandleFileMeta", "File saved", new
-            {
-                dest,
-                size,
-                peerIp,
-                runId = "transfer-check"
-            });
-            // #endregion
         }
         catch (Exception ex)
         {
@@ -242,7 +414,31 @@ public sealed class TcpTransferServer : IAsyncDisposable
         }
     }
 
-    /// <summary>Avoids clobbering an existing file (or an earlier file in the same batch).</summary>
+    private bool IsUnderReceivedDir(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var root = Path.GetFullPath(_receivedDir)
+            .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        return full.StartsWith(root, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(full, Path.GetFullPath(_receivedDir), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<string?> ReadLineAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var bytes = new List<byte>(128);
+        var one = new byte[1];
+        while (true)
+        {
+            var read = await stream.ReadAsync(one.AsMemory(0, 1), cancellationToken);
+            if (read == 0) return bytes.Count == 0 ? null : Encoding.UTF8.GetString(bytes.ToArray());
+            if (one[0] == (byte)'\n') break;
+            if (one[0] == (byte)'\r') continue;
+            bytes.Add(one[0]);
+            if (bytes.Count > 1_000_000) throw new InvalidOperationException("Line too long");
+        }
+        return Encoding.UTF8.GetString(bytes.ToArray());
+    }
+
     private static string UniqueDestination(string path)
     {
         if (!File.Exists(path)) return path;
@@ -258,9 +454,20 @@ public sealed class TcpTransferServer : IAsyncDisposable
 
     private static string SanitizeFilename(string name)
     {
-        var safe = new string(name.Select(c =>
-            char.IsLetterOrDigit(c) || c is '.' or '_' or '-' ? c : '_').ToArray());
-        if (string.IsNullOrEmpty(safe)) safe = "received_file";
+        var baseName = Path.GetFileName(name.Replace('\\', '/'));
+        var safe = new string(baseName.Select(c =>
+            char.IsLetterOrDigit(c) || c is '_' or '-' || (c == '.' && true) ? c : '_').ToArray());
+        // Reject pure dot segments
+        if (string.IsNullOrEmpty(safe) || safe is "." or ".." || safe.All(c => c == '.'))
+            safe = "received_file";
+        var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        };
+        var stem = Path.GetFileNameWithoutExtension(safe);
+        if (reserved.Contains(stem)) safe = "file_" + safe;
         return safe.Length > 200 ? safe[..200] : safe;
     }
 
@@ -274,8 +481,5 @@ public sealed class TcpTransferServer : IAsyncDisposable
         await Task.CompletedTask;
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        await StopAsync();
-    }
+    public async ValueTask DisposeAsync() => await StopAsync();
 }

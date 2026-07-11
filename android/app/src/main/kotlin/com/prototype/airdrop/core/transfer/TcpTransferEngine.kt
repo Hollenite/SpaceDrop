@@ -10,6 +10,9 @@ import com.prototype.airdrop.core.model.NearbyDevice
 import com.prototype.airdrop.core.model.TransferItem
 import com.prototype.airdrop.core.model.TransferSession
 import com.prototype.airdrop.core.model.TransferStatus
+import com.prototype.airdrop.core.model.TrustState
+import com.prototype.airdrop.core.security.IdentityKeyStore
+import com.prototype.airdrop.core.security.PairedPeerStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,9 +26,13 @@ class TcpTransferEngine(context: Context) : TransferEngine {
 
     private val appContext = context.applicationContext
     private val deviceNameStore = DeviceNameStore(appContext)
+    private val identity = IdentityKeyStore(appContext).also { it.loadOrCreate() }
+    private val peers = PairedPeerStore(appContext)
     private val fileSender = SpaceDropFileSender(
         DeviceIdStore(appContext),
-        deviceNameProvider = { deviceNameStore.getName() }
+        deviceNameProvider = { deviceNameStore.getName() },
+        identity = identity,
+        peers = peers
     )
     private val scope = CoroutineScope(Dispatchers.IO)
     private var transferJob: Job? = null
@@ -43,6 +50,14 @@ class TcpTransferEngine(context: Context) : TransferEngine {
         val host = device.host
         if (host.isNullOrBlank()) {
             _session.value = failedSession(device, items, "Device has no network address")
+            return
+        }
+        if (device.trustState != TrustState.PAIRED && !peers.isPairedDeviceId(device.id)) {
+            _session.value = failedSession(
+                device,
+                items,
+                "Not paired — open Pair phone on the PC and scan its QR"
+            )
             return
         }
         if (contentResolver == null) {
@@ -82,7 +97,8 @@ class TcpTransferEngine(context: Context) : TransferEngine {
                         currentFileIndex = update.fileIndex + 1,
                         currentFileName = update.fileName
                     )
-                }
+                },
+                expectedDeviceId = device.id
             )
 
             _session.value = if (result.success) {

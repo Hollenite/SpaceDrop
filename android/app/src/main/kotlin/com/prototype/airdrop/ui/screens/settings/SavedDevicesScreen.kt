@@ -4,13 +4,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.outlined.DevicesOther
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -26,46 +27,37 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.prototype.airdrop.core.model.NearbyDevice
-import com.prototype.airdrop.core.model.TrustState
-import com.prototype.airdrop.ui.components.DeviceCard
+import com.prototype.airdrop.core.security.PairedPeer
+import com.prototype.airdrop.core.security.PairedPeerStore
+import com.prototype.airdrop.ui.components.SettingsRow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SavedDevicesScreen(
-    onBack: () -> Unit,
-    viewModel: SettingsViewModel = viewModel()
-) {
-    val allDevices by viewModel.devices.collectAsStateWithLifecycle()
-    val pairedDevices = allDevices.filter { it.trustState == TrustState.PAIRED }
+fun SavedDevicesScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val store = remember { PairedPeerStore(context) }
+    var peers by remember { mutableStateOf(store.list()) }
+    var forgetTarget by remember { mutableStateOf<PairedPeer?>(null) }
 
-    var managed by remember { mutableStateOf<NearbyDevice?>(null) }
-
-    managed?.let { device ->
+    forgetTarget?.let { peer ->
         AlertDialog(
-            onDismissRequest = { managed = null },
-            title = { Text(device.name) },
+            onDismissRequest = { forgetTarget = null },
+            title = { Text("Forget ${peer.displayName}?") },
             text = {
-                Text(
-                    buildString {
-                        appendLine("Host: ${device.host ?: "unknown"}:${device.port}")
-                        appendLine("Status: ${device.proximityState}")
-                        appendLine()
-                        append(
-                            "Pairing management (rename / forget) isn't implemented yet — " +
-                                "device trust is still a prototype placeholder."
-                        )
-                    }
-                )
+                Text("This removes the pairing. You will need to scan the PC QR again to send files.")
             },
             confirmButton = {
-                TextButton(onClick = { managed = null }) { Text("Close") }
+                TextButton(onClick = {
+                    store.forget(peer.deviceId)
+                    peers = store.list()
+                    forgetTarget = null
+                }) { Text("Forget") }
+            },
+            dismissButton = {
+                TextButton(onClick = { forgetTarget = null }) { Text("Cancel") }
             }
         )
     }
@@ -76,10 +68,7 @@ fun SavedDevicesScreen(
                 title = { Text("Paired PCs") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
-                        )
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -88,40 +77,40 @@ fun SavedDevicesScreen(
             )
         }
     ) { innerPadding ->
-        if (pairedDevices.isEmpty()) {
+        if (peers.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-                    .padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                    .padding(24.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.DevicesOther,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(56.dp)
+                Text(
+                    text = "No paired PCs yet",
+                    style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = "No paired PCs yet.",
-                    style = MaterialTheme.typography.titleMedium,
+                    text = "On the PC tray choose Pair phone, then scan the QR from Home.",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
+                    modifier = Modifier.padding(top = 8.dp)
                 )
             }
         } else {
             LazyColumn(
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    end = 16.dp,
-                    top = innerPadding.calculateTopPadding() + 8.dp,
-                    bottom = 16.dp
-                ),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(pairedDevices, key = { it.id }) { device ->
-                    DeviceCard(device = device, onClick = { managed = device })
+                items(peers, key = { it.deviceId }) { peer ->
+                    SettingsRow(
+                        title = peer.displayName,
+                        subtitle = "${peer.deviceId.take(8)}… · tap to forget",
+                        icon = Icons.Default.Computer,
+                        onClick = { forgetTarget = peer },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }

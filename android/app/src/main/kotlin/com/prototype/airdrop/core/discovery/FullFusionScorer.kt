@@ -24,7 +24,8 @@ object FullFusionScorer {
 
     fun score(
         candidate: MergedDiscoveryCandidate,
-        phoneBssid: String?
+        phoneBssid: String?,
+        pairedDeviceIds: Set<String> = emptySet()
     ): Pair<NearbyDevice, FusionBreakdown> {
         val rssi = candidate.rssi
         var bleRssiWeight = 0f
@@ -96,7 +97,11 @@ object FullFusionScorer {
         val device = NearbyDevice(
             id = candidate.deviceId,
             name = candidate.name,
-            trustState = TrustState.PAIRED,
+            trustState = if (pairedDeviceIds.contains(candidate.deviceId)) {
+                TrustState.PAIRED
+            } else {
+                TrustState.NEW_DEVICE
+            },
             proximityState = proximity,
             isReady = host != null,
             confidence = confidence,
@@ -124,7 +129,8 @@ object FullFusionScorer {
 
     fun scoreAll(
         candidates: List<MergedDiscoveryCandidate>,
-        phoneBssid: String?
+        phoneBssid: String?,
+        pairedDeviceIds: Set<String> = emptySet()
     ): List<Pair<NearbyDevice, FusionBreakdown>> =
         candidates
             .filter { candidate ->
@@ -136,6 +142,6 @@ object FullFusionScorer {
                     else -> candidate.host != null || candidate.hasMdns || candidate.hasBle
                 }
             }
-            .map { score(it, phoneBssid) }
+            .map { score(it, phoneBssid, pairedDeviceIds) }
             .sortedByDescending { it.first.confidence }
 }

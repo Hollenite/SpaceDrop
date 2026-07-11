@@ -52,7 +52,7 @@ fun PrivacyScreen(onBack: () -> Unit) {
             Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = "How Prototype-airDrop protects your transfers",
+                text = "How SpaceDrop protects your transfers",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onBackground
             )
@@ -61,22 +61,27 @@ fun PrivacyScreen(onBack: () -> Unit) {
 
             PrivacySection(
                 heading = "No cloud, no servers",
-                body = "Files travel directly between your phone and your PC. Nothing is uploaded to any server, and no account is needed."
+                body = "Files travel directly between your phone and your PC on your local network. Nothing is uploaded to any SpaceDrop server."
             )
 
             PrivacySection(
-                heading = "Pairing by confirmation code",
-                body = "Before any device can receive your files, both sides must confirm the same six-digit code. Only you can approve the pairing."
+                heading = "QR pairing",
+                body = "You pair by scanning a QR code shown on your PC tray. That QR pins the PC's cryptographic identity so a fake PC on the Wi‑Fi cannot impersonate it."
             )
 
             PrivacySection(
-                heading = "Paired devices only",
-                body = "Your phone only sends to devices you have explicitly paired. Unknown devices see nothing."
+                heading = "Encrypted transfers",
+                body = "After pairing, every file transfer uses mutual TLS. Only previously paired devices can send or receive. Unpaired phones are rejected."
             )
 
             PrivacySection(
-                heading = "What stays on your device",
-                body = "No file names, transfer history, or device identifiers ever leave your local network."
+                heading = "Room confirmation tone",
+                body = "The PC plays a brief ultrasonic tone only while you are looking for devices (phone-armed). The tone never carries your files."
+            )
+
+            PrivacySection(
+                heading = "What stays local",
+                body = "Pairing keys and peer records stay on each device. File contents are not sent to the cloud."
             )
 
             Spacer(modifier = Modifier.height(24.dp))

@@ -50,7 +50,13 @@ class DevicePickerViewModel(application: Application) : AndroidViewModel(applica
         get() = AppState.pendingTransferItems
 
     init {
+        fusedRepository.startPeriodicRefresh(intervalMs = 2_000L)
         observeSuccessfulTransfer()
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        fusedRepository.stopPeriodicRefresh()
     }
 
     private fun observeSuccessfulTransfer() {

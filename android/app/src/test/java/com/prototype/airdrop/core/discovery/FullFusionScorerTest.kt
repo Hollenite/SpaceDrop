@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.prototype.airdrop.core.model.TrustState
 
 class FullFusionScorerTest {
 
@@ -26,6 +27,27 @@ class FullFusionScorerTest {
         assertEquals(0.15f, breakdown.mdnsWeight, 0.001f)
         assertEquals(0.10f, breakdown.hostWeight, 0.001f)
         assertEquals(false, breakdown.bssidMatch)
+        assertEquals(TrustState.NEW_DEVICE, device.trustState)
+    }
+
+    @Test
+    fun pairedDeviceIds_markTrustPaired() {
+        val candidate = MergedDiscoveryCandidate(
+            deviceId = "pc-1",
+            name = "Office PC",
+            host = "192.168.1.10",
+            port = 58392,
+            rssi = null,
+            hasBle = false,
+            hasMdns = true,
+            pcBssid = null
+        )
+        val (device, _) = FullFusionScorer.score(
+            candidate,
+            phoneBssid = null,
+            pairedDeviceIds = setOf("pc-1")
+        )
+        assertEquals(TrustState.PAIRED, device.trustState)
     }
 
     @Test

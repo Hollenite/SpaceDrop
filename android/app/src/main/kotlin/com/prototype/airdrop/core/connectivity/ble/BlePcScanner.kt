@@ -279,7 +279,8 @@ class BlePcScanner(context: Context) {
                         name = name,
                         host = endpoint.first,
                         port = endpoint.second,
-                        rssi = rssi
+                        rssi = rssi,
+                        bluetoothAddress = device.address
                     )
                     log("Resolved BLE PC $deviceId at ${endpoint.first}:${endpoint.second} rssi=$rssi")
                 }
@@ -303,6 +304,73 @@ class BlePcScanner(context: Context) {
 
     private fun log(message: String) {
         Log.d(TAG, message)
+    }
+
+    /**
+     * Connects briefly and writes an ARM/DISARM JSON command to the control characteristic.
+     */
+    @SuppressLint("MissingPermission")
+    fun writeControl(bluetoothAddress: String, json: String, onDone: (Boolean) -> Unit = {}) {
+        val bluetoothAdapter = adapter
+        if (bluetoothAdapter == null || !BlePermissions.hasAll(appContext)) {
+            onDone(false)
+            return
+        }
+        val device = runCatching { bluetoothAdapter.getRemoteDevice(bluetoothAddress) }.getOrNull()
+        if (device == null) {
+            onDone(false)
+            return
+        }
+        val payload = json.toByteArray(Charsets.UTF_8)
+        device.connectGatt(
+            appContext,
+            false,
+            object : BluetoothGattCallback() {
+                override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+                    if (newState == BluetoothProfile.STATE_CONNECTED) {
+                        g.discoverServices()
+                    } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                        runCatching { g.close() }
+                    }
+                }
+
+                override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+                    val ch = g.getService(SpaceDropBleUuids.SERVICE)
+                        ?.getCharacteristic(SpaceDropBleUuids.CONTROL)
+                    if (ch == null) {
+                        onDone(false)
+                        runCatching { g.disconnect(); g.close() }
+                        return
+                    }
+                    ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    @Suppress("DEPRECATION")
+                    ch.value = payload
+                    val ok = g.writeCharacteristic(ch)
+                    if (!ok) {
+                        onDone(false)
+                        runCatching { g.disconnect(); g.close() }
+                    }
+                }
+
+                override fun onCharacteristicWrite(
+                    g: BluetoothGatt,
+                    characteristic: BluetoothGattCharacteristic,
+                    status: Int
+                ) {
+                    onDone(status == BluetoothGatt.GATT_SUCCESS)
+                    runCatching { g.disconnect(); g.close() }
+                }
+            },
+            BluetoothDevice.TRANSPORT_LE
+        )
+    }
+
+    fun armAcoustic(bluetoothAddress: String, durationMs: Int = 20_000) {
+        writeControl(bluetoothAddress, """{"op":"ARM","duration_ms":$durationMs}""")
+    }
+
+    fun disarmAcoustic(bluetoothAddress: String) {
+        writeControl(bluetoothAddress, """{"op":"DISARM"}""")
     }
 
     companion object {

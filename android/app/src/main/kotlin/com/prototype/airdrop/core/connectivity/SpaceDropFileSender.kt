@@ -4,16 +4,19 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.util.Log
 import com.prototype.airdrop.core.model.TransferItem
+import com.prototype.airdrop.core.security.IdentityKeyStore
+import com.prototype.airdrop.core.security.PairedPeerStore
 import org.json.JSONObject
 import java.io.InputStream
-import java.net.ConnectException
 import java.net.InetSocketAddress
-import java.net.Socket
-import java.net.SocketTimeoutException
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLSocket
 
 class SpaceDropFileSender(
     private val deviceIdStore: DeviceIdStore,
-    private val deviceNameProvider: () -> String = { DeviceNameStore.defaultName() }
+    private val deviceNameProvider: () -> String = { DeviceNameStore.defaultName() },
+    private val identity: IdentityKeyStore,
+    private val peers: PairedPeerStore
 ) {
 
     data class SendResult(
@@ -23,44 +26,36 @@ class SpaceDropFileSender(
     )
 
     data class ProgressUpdate(
-        /** Overall bytes sent across the whole batch. */
         val bytesSent: Long,
-        /** Overall total bytes across the whole batch. */
         val totalBytes: Long,
-        /** Overall percent across the whole batch. */
         val progressPercent: Int,
         val speedText: String,
-        /** 0-based index of the file currently being sent. */
         val fileIndex: Int = 0,
         val fileCount: Int = 1,
         val fileName: String = ""
     )
 
-    /** Single-file convenience wrapper over [sendFiles]. */
     fun sendFile(
         host: String,
         port: Int,
         item: TransferItem,
         contentResolver: ContentResolver,
-        onProgress: (ProgressUpdate) -> Unit
-    ): SendResult = sendFiles(host, port, listOf(item), contentResolver, onProgress)
+        onProgress: (ProgressUpdate) -> Unit,
+        expectedDeviceId: String? = null
+    ): SendResult = sendFiles(host, port, listOf(item), contentResolver, onProgress, expectedDeviceId)
 
-    /**
-     * Sends 1..N files to a PC over a single TCP connection: one PING/PONG handshake, then a
-     * FILE_META -> raw bytes -> FILE_ACK cycle per file, in order. Progress is reported as overall
-     * batch progress plus the current file index/name. Fails fast on the first rejected/failed file.
-     *
-     * Control replies (PONG, FILE_ACKs) are read through a single persistent reader; the client only
-     * writes file bytes and never reads them, so there is no read-ahead interleaving to worry about.
-     */
     fun sendFiles(
         host: String,
         port: Int,
         items: List<TransferItem>,
         contentResolver: ContentResolver,
-        onProgress: (ProgressUpdate) -> Unit
+        onProgress: (ProgressUpdate) -> Unit,
+        expectedDeviceId: String? = null
     ): SendResult {
         if (items.isEmpty()) return SendResult(false, error = "No files to send")
+
+        val peer = expectedDeviceId?.let { peers.findByDeviceId(it) }
+            ?: return SendResult(false, error = "Not paired with this PC — scan its QR first")
 
         val sizes = LongArray(items.size)
         var overallTotal = 0L
@@ -77,30 +72,40 @@ class SpaceDropFileSender(
             overallTotal += size
         }
 
-        var socket: Socket? = null
+        var sslSocket: SSLSocket? = null
         return try {
-            socket = Socket()
-            socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-            socket.soTimeout = READ_TIMEOUT_MS
+            identity.loadOrCreate()
+            val ctx = identity.createSslContext(setOf(peer.fingerprint))
+            val factory = ctx.socketFactory
+            sslSocket = factory.createSocket() as SSLSocket
+            sslSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            sslSocket.soTimeout = READ_TIMEOUT_MS
+            sslSocket.startHandshake()
 
-            val output = socket.getOutputStream()
-            val reader = socket.getInputStream().bufferedReader(Charsets.UTF_8)
+            val serverCert = sslSocket.session.peerCertificates.firstOrNull() as? X509Certificate
+                ?: return SendResult(false, error = "No server certificate")
+            val fp = IdentityKeyStore.fingerprintOf(serverCert)
+            if (!fp.equals(peer.fingerprint, ignoreCase = true)) {
+                return SendResult(false, error = "Server identity mismatch (possible MITM)")
+            }
+
+            val output = sslSocket.outputStream
+            val reader = sslSocket.inputStream.bufferedReader(Charsets.UTF_8)
 
             val pingJson = JSONObject().apply {
                 put("type", "PING")
                 put("device_name", deviceNameProvider())
                 put("device_id", deviceIdStore.getOrCreateDeviceId())
-                put("token", DEV_TOKEN)
                 put("count", items.size)
             }
             writeLine(output, pingJson.toString())
 
             val pongLine = reader.readLine() ?: return SendResult(false, error = "Empty PONG")
             val pong = JSONObject(pongLine)
-            if (pong.optString("type") != "PONG") {
-                return SendResult(false, error = "Unexpected response: ${pong.optString("type")}")
+            if (pong.optString("type") != "PONG" || !pong.optBoolean("ok", true)) {
+                return SendResult(false, error = pong.optString("error", "Handshake rejected"))
             }
-            val pcName = pong.optString("device_name", "PC")
+            val pcName = pong.optString("device_name", peer.displayName)
 
             var overallSent = 0L
             var lastProgressTime = System.currentTimeMillis()
@@ -113,7 +118,6 @@ class SpaceDropFileSender(
                     put("name", item.displayName)
                     put("size", sizes[index])
                     put("mime", item.mimeType ?: "application/octet-stream")
-                    put("token", DEV_TOKEN)
                 }
                 writeLine(output, metaJson.toString())
 
@@ -162,15 +166,11 @@ class SpaceDropFileSender(
             }
 
             SendResult(success = true, pcName = pcName)
-        } catch (error: ConnectException) {
-            SendResult(false, error = "Connection refused — check PC IP and firewall on port $port")
-        } catch (error: SocketTimeoutException) {
-            SendResult(false, error = "Connection timed out to $host:$port")
         } catch (error: Exception) {
             Log.d(TAG, "sendFiles failed: ${error.message}")
             SendResult(false, error = "${error.javaClass.simpleName}: ${error.message}")
         } finally {
-            runCatching { socket?.close() }
+            runCatching { sslSocket?.close() }
         }
     }
 
@@ -189,7 +189,6 @@ class SpaceDropFileSender(
 
     companion object {
         private const val TAG = "SpaceDropFile"
-        private const val DEV_TOKEN = "spacedrop-dev-token"
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 60_000
         private const val BUFFER_SIZE = 32 * 1024

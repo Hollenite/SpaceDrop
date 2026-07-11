@@ -1,11 +1,14 @@
 using System.Net.NetworkInformation;
+using System.Text.Json;
+using System.Windows.Forms;
 using SpaceDrop.Tray.Protocol;
 
 namespace SpaceDrop.Tray.Services;
 
 public sealed class SpaceDropHostService : IAsyncDisposable
 {
-    private readonly DeviceIdStore _deviceIdStore = new();
+    private readonly IdentityKeyStore _identity = new();
+    private readonly PairedPeerStore _peers = new();
     private readonly LocalIpSelector _ipSelector = new();
     private readonly MdnsAdvertiser _mdns = new();
     private readonly BleGattService _ble = new();
@@ -13,27 +16,119 @@ public sealed class SpaceDropHostService : IAsyncDisposable
     private TcpTransferServer? _tcp;
     private CancellationTokenSource? _cts;
     private string? _currentIp;
+    private PairingForm? _pairingForm;
+
+    public IdentityKeyStore Identity => _identity;
+    public PairedPeerStore Peers => _peers;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var deviceId = _deviceIdStore.GetOrCreateDeviceId();
+        _identity.LoadOrCreate();
         var hostname = Environment.MachineName;
 
-        Console.WriteLine($"Loaded device ID: {deviceId}");
+        Console.WriteLine($"Loaded device ID: {_identity.DeviceId}");
 
-        _tcp = new TcpTransferServer(deviceId, hostname);
+        _acoustic.Configure(_identity.DeviceId);
+        _ble.SetControlHandler(HandleBleControl);
+
+        _tcp = new TcpTransferServer(
+            _identity,
+            _peers,
+            hostname,
+            isPairingWindowOpen: () => _pairingForm?.IsOpen == true,
+            confirmPairing: ConfirmPairingOnUiThread,
+            confirmReceive: ConfirmReceiveOnUiThread,
+            onAcousticArm: ms => _acoustic.Arm(ms));
+
         await _tcp.StartAsync(_cts.Token);
-
-        // Continuously emit the 19 kHz FSK device-id token for acoustic corroboration on the phone.
-        _acoustic.Start(deviceId, _cts.Token);
-
-        await RefreshNetworkAsync(deviceId, hostname);
+        await RefreshNetworkAsync(_identity.DeviceId, hostname);
 
         NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        _ = Task.Run(() => NetworkWatchLoopAsync(_identity.DeviceId, hostname, _cts.Token), _cts.Token);
+    }
 
-        _ = Task.Run(() => NetworkWatchLoopAsync(deviceId, hostname, _cts.Token), _cts.Token);
+    public void ShowPairingWindow()
+    {
+        if (_pairingForm is { IsOpen: true })
+        {
+            _pairingForm.BringToFront();
+            return;
+        }
+
+        _pairingForm = new PairingForm(_identity, _peers);
+        _pairingForm.Show();
+    }
+
+    private void HandleBleControl(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var op = doc.RootElement.GetProperty("op").GetString();
+            if (op == "DISARM")
+            {
+                _acoustic.Disarm();
+                return;
+            }
+            if (op == "ARM")
+            {
+                var ms = doc.RootElement.TryGetProperty("duration_ms", out var d) && d.TryGetInt32(out var v)
+                    ? v : SpaceDropProtocol.DefaultAcousticArmMs;
+                _acoustic.Arm(ms);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"BLE control parse error: {ex.Message}");
+        }
+    }
+
+    private bool ConfirmPairingOnUiThread(string phoneName, string deviceId)
+    {
+        bool result = false;
+        void Show()
+        {
+            result = MessageBox.Show(
+                $"Allow pairing with \"{phoneName}\"?\n\nDevice ID: {deviceId}",
+                "SpaceDrop pairing",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question) == DialogResult.Yes;
+        }
+
+        if (Application.OpenForms.Count > 0)
+        {
+            var form = Application.OpenForms[0]!;
+            form.Invoke(Show);
+        }
+        else
+        {
+            Show();
+        }
+
+        if (result) _pairingForm?.NotifyPeersChanged();
+        return result;
+    }
+
+    private bool ConfirmReceiveOnUiThread(string phoneName, string fileName, long size)
+    {
+        bool result = false;
+        void Show()
+        {
+            result = MessageBox.Show(
+                $"Accept file from {phoneName}?\n\n{fileName}\n{size} bytes",
+                "SpaceDrop receive",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question) == DialogResult.Yes;
+        }
+
+        if (Application.OpenForms.Count > 0)
+        {
+            Application.OpenForms[0]!.Invoke(Show);
+        }
+        else Show();
+        return result;
     }
 
     private void OnNetworkAddressChanged(object? sender, EventArgs e) =>
@@ -51,10 +146,7 @@ public sealed class SpaceDropHostService : IAsyncDisposable
                 await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
                 await RefreshNetworkAsync(deviceId, hostname);
             }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            catch (OperationCanceledException) { break; }
         }
     }
 
@@ -63,8 +155,7 @@ public sealed class SpaceDropHostService : IAsyncDisposable
         if (_tcp is null) return;
         try
         {
-            var deviceId = _deviceIdStore.GetOrCreateDeviceId();
-            await RefreshNetworkAsync(deviceId, Environment.MachineName);
+            await RefreshNetworkAsync(_identity.DeviceId, Environment.MachineName);
         }
         catch (Exception ex)
         {
@@ -75,10 +166,7 @@ public sealed class SpaceDropHostService : IAsyncDisposable
     private async Task RefreshNetworkAsync(string deviceId, string hostname)
     {
         var selection = _ipSelector.SelectBestIp();
-        if (selection.Ip == _currentIp)
-        {
-            return;
-        }
+        if (selection.Ip == _currentIp) return;
 
         _currentIp = selection.Ip;
         var bssid = WlanBssidReader.TryGetConnectedBssid();
@@ -90,6 +178,7 @@ public sealed class SpaceDropHostService : IAsyncDisposable
             selection.Ip,
             SpaceDropProtocol.Port,
             bssid,
+            _identity.FingerprintHex,
             CancellationToken.None);
 
         if (_ble.IsAvailable)
@@ -111,7 +200,9 @@ public sealed class SpaceDropHostService : IAsyncDisposable
     public string GetStatusText()
     {
         var ble = _ble.IsAvailable ? "BLE on" : $"BLE off ({_ble.UnavailableReason ?? "unknown"})";
-        return $"SpaceDrop — {_currentIp ?? "no IP"} — {ble}";
+        var acoustic = _acoustic.IsArmed ? "tone armed" : "tone silent";
+        var pairs = _peers.List().Count;
+        return $"SpaceDrop — {_currentIp ?? "no IP"} — {ble} — {acoustic} — {pairs} paired";
     }
 
     public string ReceivedDirectory => _tcp?.ReceivedDirectory
@@ -122,14 +213,11 @@ public sealed class SpaceDropHostService : IAsyncDisposable
         NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
         _cts?.Cancel();
-
+        _pairingForm?.Close();
         await _acoustic.StopAsync();
         await _mdns.StopAsync();
         await _ble.StopAsync();
-        if (_tcp is not null)
-        {
-            await _tcp.StopAsync();
-        }
+        if (_tcp is not null) await _tcp.StopAsync();
     }
 
     public async ValueTask DisposeAsync()
@@ -139,9 +227,6 @@ public sealed class SpaceDropHostService : IAsyncDisposable
         await _acoustic.DisposeAsync();
         await _mdns.DisposeAsync();
         await _ble.DisposeAsync();
-        if (_tcp is not null)
-        {
-            await _tcp.DisposeAsync();
-        }
+        if (_tcp is not null) await _tcp.DisposeAsync();
     }
 }

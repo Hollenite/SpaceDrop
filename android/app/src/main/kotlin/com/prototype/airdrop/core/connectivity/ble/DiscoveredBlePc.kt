@@ -6,5 +6,6 @@ data class DiscoveredBlePc(
     val host: String,
     val port: Int,
     val rssi: Int,
+    val bluetoothAddress: String = "",
     val lastSeenMs: Long = System.currentTimeMillis()
 )

@@ -13,6 +13,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext()
     {
         _trayIcon.ExitRequested += OnExitRequested;
+        _trayIcon.PairRequested += () => _hostService.ShowPairingWindow();
         _statusTimer.Tick += (_, _) => UpdateTrayStatus();
         _ = StartAsync();
     }

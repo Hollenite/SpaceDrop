@@ -5,33 +5,63 @@ using SpaceDrop.AcousticFsk;
 namespace SpaceDrop.Tray.Services;
 
 /// <summary>
-/// Background service that continuously emits this PC's device-id token as a 19 kHz FSK loop so a
-/// nearby Android phone can acoustically corroborate a device already found over BLE/mDNS.
-///
-/// The token is derived from the tray <see cref="DeviceIdStore"/> device id and the current wall-clock
-/// epoch (30 s buckets). The loop is rebuilt whenever the epoch rolls over so the token the phone
-/// computes for the current epoch (+/- 1) always matches. Prefers laptop/desktop speakers over
-/// headphones (same policy as the Tier 0 AcousticEmitter POC).
+/// Idle-by-default FSK emitter. Starts only when <see cref="Arm"/> is called (BLE/TCP),
+/// runs for a bounded window, then returns to silence.
 /// </summary>
 public sealed class AcousticEmitterService : IAsyncDisposable
 {
     private const int SampleRate = FskProtocol.SampleRate;
     private const double Amplitude = FskProtocol.Amplitude;
+    private const int MaxDurationMs = 60_000;
+    private const int DefaultDurationMs = 20_000;
 
-    private CancellationTokenSource? _cts;
+    private readonly object _gate = new();
+    private string? _deviceId;
+    private CancellationTokenSource? _armCts;
     private Task? _loopTask;
 
-    public void Start(string deviceId, CancellationToken cancellationToken)
-    {
-        if (_loopTask is not null) return;
-        if (string.IsNullOrWhiteSpace(deviceId)) return;
+    public bool IsArmed { get; private set; }
 
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _loopTask = Task.Run(() => RunLoopAsync(deviceId, _cts.Token), _cts.Token);
+    public void Configure(string deviceId)
+    {
+        _deviceId = deviceId;
     }
 
-    private static async Task RunLoopAsync(string deviceId, CancellationToken ct)
+    /// <summary>Start emitting for up to <paramref name="durationMs"/> (clamped).</summary>
+    public void Arm(int durationMs = DefaultDurationMs)
     {
+        if (string.IsNullOrWhiteSpace(_deviceId)) return;
+        var ms = Math.Clamp(durationMs, 1_000, MaxDurationMs);
+
+        lock (_gate)
+        {
+            _armCts?.Cancel();
+            _armCts?.Dispose();
+            _armCts = new CancellationTokenSource();
+            var ct = _armCts.Token;
+            IsArmed = true;
+            _loopTask = Task.Run(() => RunArmedAsync(_deviceId!, ms, ct), ct);
+        }
+
+        Console.WriteLine($"Acoustic ARM {ms} ms");
+    }
+
+    public void Disarm()
+    {
+        lock (_gate)
+        {
+            _armCts?.Cancel();
+            IsArmed = false;
+        }
+        Console.WriteLine("Acoustic DISARM");
+    }
+
+    private async Task RunArmedAsync(string deviceId, int durationMs, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(durationMs);
+        var linked = timeoutCts.Token;
+
         MMDevice device;
         try
         {
@@ -40,52 +70,59 @@ public sealed class AcousticEmitterService : IAsyncDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"Acoustic emitter disabled (no output device): {ex.Message}");
+            IsArmed = false;
             return;
         }
 
         Console.WriteLine($"Acoustic emitter using output: {device.FriendlyName}");
         var encoder = new FskEncoder(SampleRate, Amplitude);
 
-        while (!ct.IsCancellationRequested)
+        try
         {
-            var epoch = AcousticToken.EpochFromUnixSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-            var frame = encoder.EncodeFrameWithGap(deviceId, epoch, FskProtocol.InterFrameGapMs);
-            var token = AcousticToken.ComputeToken20(deviceId, epoch);
-            Console.WriteLine($"Acoustic emit epoch={epoch} token={AcousticToken.TokenHex(token)} (loop)");
-
-            var provider = new FskLoopWaveProvider(frame, SampleRate);
-            WasapiOut? output = null;
-            try
+            while (!linked.IsCancellationRequested)
             {
-                output = new WasapiOut(device, AudioClientShareMode.Shared, true, 50);
-                output.Init(provider);
-                output.Play();
+                var epoch = AcousticToken.EpochFromUnixSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                var frame = encoder.EncodeFrameWithGap(deviceId, epoch, FskProtocol.InterFrameGapMs);
+                var token = AcousticToken.ComputeToken20(deviceId, epoch);
+                Console.WriteLine($"Acoustic emit epoch={epoch} token={AcousticToken.TokenHex(token)}");
 
-                // Keep looping the current-epoch frame until the epoch rolls over, then rebuild.
-                while (!ct.IsCancellationRequested &&
-                       AcousticToken.EpochFromUnixSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds()) == epoch)
+                var provider = new FskLoopWaveProvider(frame, SampleRate);
+                WasapiOut? output = null;
+                try
                 {
-                    await Task.Delay(500, ct);
+                    output = new WasapiOut(device, AudioClientShareMode.Shared, true, 50);
+                    output.Init(provider);
+                    output.Play();
+
+                    while (!linked.IsCancellationRequested &&
+                           AcousticToken.EpochFromUnixSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds()) == epoch)
+                    {
+                        await Task.Delay(500, linked);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Acoustic emit error: {ex.Message}");
+                    try { await Task.Delay(1000, linked); } catch (OperationCanceledException) { break; }
+                }
+                finally
+                {
+                    try { output?.Stop(); } catch { /* ignore */ }
+                    output?.Dispose();
                 }
             }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Acoustic emit error: {ex.Message}");
-                try { await Task.Delay(2000, ct); } catch (OperationCanceledException) { break; }
-            }
-            finally
-            {
-                try { output?.Stop(); } catch { /* ignore */ }
-                output?.Dispose();
-            }
+        }
+        finally
+        {
+            IsArmed = false;
+            Console.WriteLine("Acoustic window ended (silent)");
         }
     }
 
-    /// <summary>Prefer built-in / external speakers over headphones (mirrors the POC selector).</summary>
     private static MMDevice SelectSpeaker()
     {
         using var enumerator = new MMDeviceEnumerator();
@@ -121,18 +158,18 @@ public sealed class AcousticEmitterService : IAsyncDisposable
 
     public async Task StopAsync()
     {
-        _cts?.Cancel();
-        if (_loopTask is not null)
+        Disarm();
+        Task? task;
+        lock (_gate) { task = _loopTask; }
+        if (task is not null)
         {
-            try { await _loopTask; }
-            catch (OperationCanceledException) { /* expected */ }
-            _loopTask = null;
+            try { await task; } catch (OperationCanceledException) { /* expected */ }
         }
     }
 
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
-        _cts?.Dispose();
+        _armCts?.Dispose();
     }
 }

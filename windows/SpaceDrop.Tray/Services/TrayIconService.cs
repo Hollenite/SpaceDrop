@@ -14,6 +14,7 @@ public sealed class TrayIconService : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _statusItem;
+    private readonly ToolStripMenuItem _pairItem;
     private readonly ToolStripMenuItem _receivedFolderItem;
     private readonly ToolStripMenuItem _exitItem;
     private string _receivedDirectory = string.Empty;
@@ -21,6 +22,7 @@ public sealed class TrayIconService : IDisposable
     public TrayIconService()
     {
         _statusItem = new ToolStripMenuItem("Status: starting…") { Enabled = false };
+        _pairItem = new ToolStripMenuItem("Pair phone (show QR)…", null, (_, _) => PairRequested?.Invoke());
         _receivedFolderItem = new ToolStripMenuItem(
             "Open received folder",
             null,
@@ -35,12 +37,14 @@ public sealed class TrayIconService : IDisposable
             ContextMenuStrip = new ContextMenuStrip()
         };
         _notifyIcon.ContextMenuStrip!.Items.Add(_statusItem);
+        _notifyIcon.ContextMenuStrip.Items.Add(_pairItem);
         _notifyIcon.ContextMenuStrip.Items.Add(_receivedFolderItem);
         _notifyIcon.ContextMenuStrip.Items.Add(new ToolStripSeparator());
         _notifyIcon.ContextMenuStrip.Items.Add(_exitItem);
     }
 
     public event Action? ExitRequested;
+    public event Action? PairRequested;
 
     public void SetReceivedDirectory(string path)
     {
