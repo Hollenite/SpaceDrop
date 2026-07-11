@@ -9,7 +9,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -30,57 +29,100 @@ fun OrbitalBackground(
     ringCount: Int = 3,
     pulseDurationMs: Int = 3_000
 ) {
-    val progress = if (pulseEnabled) {
-        rememberPulseProgress(pulseDurationMs)
+    if (pulseEnabled) {
+        AnimatedOrbitalBackground(
+            modifier = modifier,
+            radiusFraction = radiusFraction,
+            guideColor = guideColor,
+            pulseColor = pulseColor,
+            showGuide = showGuide,
+            maxPulseRadiusFraction = maxPulseRadiusFraction,
+            ringCount = ringCount,
+            pulseDurationMs = pulseDurationMs
+        )
     } else {
-        0f
+        StaticOrbitalBackground(
+            modifier = modifier,
+            radiusFraction = radiusFraction,
+            guideColor = guideColor,
+            showGuide = showGuide
+        )
     }
+}
 
-    val strokePx = remember { 1.dp.toPx() }
-    val pulseStrokePx = remember { 2.dp.toPx() }
-    val dashEffect = remember { PathEffect.dashPathEffect(floatArrayOf(12f, 8f)) }
+@Composable
+private fun StaticOrbitalBackground(
+    modifier: Modifier,
+    radiusFraction: Float,
+    guideColor: Color,
+    showGuide: Boolean
+) {
+    Canvas(modifier = modifier) {
+        if (!showGuide) return@Canvas
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val guideRadius = size.minDimension * radiusFraction
+        drawCircle(
+            color = guideColor,
+            radius = guideRadius,
+            center = center,
+            style = Stroke(
+                width = 1.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))
+            )
+        )
+    }
+}
+
+@Composable
+private fun AnimatedOrbitalBackground(
+    modifier: Modifier,
+    radiusFraction: Float,
+    guideColor: Color,
+    pulseColor: Color,
+    showGuide: Boolean,
+    maxPulseRadiusFraction: Float,
+    ringCount: Int,
+    pulseDurationMs: Int
+) {
+    val transition = rememberInfiniteTransition(label = "orbital_bg")
+    val progress by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = pulseDurationMs, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "orbital_pulse"
+    )
 
     Canvas(modifier = modifier) {
         val center = Offset(size.width / 2f, size.height / 2f)
         val guideRadius = size.minDimension * radiusFraction
+        val pulseStrokePx = 2.dp.toPx()
 
         if (showGuide) {
             drawCircle(
                 color = guideColor,
                 radius = guideRadius,
                 center = center,
-                style = Stroke(width = strokePx, pathEffect = dashEffect)
+                style = Stroke(
+                    width = 1.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))
+                )
             )
         }
 
-        if (pulseEnabled) {
-            val maxRadius = size.minDimension * maxPulseRadiusFraction
-            for (index in 0 until ringCount) {
-                val phase = ((progress + index.toFloat() / ringCount) % 1f)
-                val radius = maxRadius * phase
-                val alpha = (1f - phase).coerceIn(0f, 1f) * 0.45f
-                drawCircle(
-                    color = pulseColor.copy(alpha = alpha),
-                    radius = radius,
-                    center = center,
-                    style = Stroke(width = pulseStrokePx)
-                )
-            }
+        val maxRadius = size.minDimension * maxPulseRadiusFraction
+        for (index in 0 until ringCount) {
+            val phase = ((progress + index.toFloat() / ringCount) % 1f)
+            val radius = maxRadius * phase
+            val alpha = (1f - phase).coerceIn(0f, 1f) * 0.45f
+            drawCircle(
+                color = pulseColor.copy(alpha = alpha),
+                radius = radius,
+                center = center,
+                style = Stroke(width = pulseStrokePx)
+            )
         }
     }
-}
-
-@Composable
-private fun rememberPulseProgress(durationMs: Int): Float {
-    val transition = rememberInfiniteTransition(label = "orbital_bg")
-    val progress by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = durationMs, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "orbital_pulse"
-    )
-    return progress
 }

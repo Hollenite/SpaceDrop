@@ -83,55 +83,86 @@ fun OrbitalDeviceScene(
         }
 
         rankedDevices.forEachIndexed { index, ranked ->
+            val position = positions.getOrNull(index) ?: return@forEachIndexed
             key(ranked.device.id) {
-                val position = positions.getOrNull(index) ?: return@key
-                val isShareCenter = position.isCenter
-                val scale = OrbitalDeviceLayout.computeAvatarScale(
-                    ranked = ranked,
-                    totalDevices = rankedDevices.size,
-                    isShareCenter = isShareCenter
-                )
-                val baseRing = if (isShareCenter) {
-                    OrbitalDeviceLayout.primaryRingSize()
-                } else {
-                    OrbitalDeviceLayout.orbitalRingSize()
-                }
-                val scaledRing = (baseRing.value * scale * position.avatarScale).dp
-
-                val visual = nodeVisualFor(ranked)
-                val opacity = when (mode) {
-                    OrbitalSceneMode.Home -> OrbitalDeviceLayout.ringOpacity(ranked.device.confidence)
-                    OrbitalSceneMode.Share -> {
-                        val isActive = activeDeviceId == null || activeDeviceId == ranked.device.id
-                        if (isActive) visual.opacity else 0.4f
-                    }
-                }
-
-                val enabled = when (mode) {
-                    OrbitalSceneMode.Home -> ranked.device.trustState != TrustState.BLOCKED
-                    OrbitalSceneMode.Share -> visual.enabled &&
-                        visual.state == AvatarTransferState.Idle &&
-                        (activeDeviceId == null || activeDeviceId == ranked.device.id)
-                }
-
-                OrbitalDeviceNode(
+                OrbitalDeviceSlot(
                     ranked = ranked,
                     position = position,
+                    mode = mode,
+                    rankedDeviceCount = rankedDevices.size,
                     widthPx = widthPx,
                     heightPx = heightPx,
                     density = density,
-                    scaledRing = scaledRing,
-                    opacity = opacity,
-                    popInIndex = index,
+                    activeDeviceId = activeDeviceId,
                     reduceMotion = reduceMotion || compact,
-                    state = visual.state,
-                    progress = visual.progress,
-                    enabled = enabled,
-                    onClick = { onDeviceClick(ranked) }
+                    popInIndex = index,
+                    nodeVisualFor = nodeVisualFor,
+                    onDeviceClick = onDeviceClick
                 )
             }
         }
     }
+}
+
+@Composable
+private fun OrbitalDeviceSlot(
+    ranked: RankedNearbyDevice,
+    position: OrbitalPosition,
+    mode: OrbitalSceneMode,
+    rankedDeviceCount: Int,
+    widthPx: Float,
+    heightPx: Float,
+    density: Float,
+    activeDeviceId: String?,
+    reduceMotion: Boolean,
+    popInIndex: Int,
+    nodeVisualFor: (RankedNearbyDevice) -> OrbitalNodeVisual,
+    onDeviceClick: (RankedNearbyDevice) -> Unit
+) {
+    val isShareCenter = position.isCenter
+    val scale = OrbitalDeviceLayout.computeAvatarScale(
+        ranked = ranked,
+        totalDevices = rankedDeviceCount,
+        isShareCenter = isShareCenter
+    )
+    val baseRing = if (isShareCenter) {
+        OrbitalDeviceLayout.primaryRingSize()
+    } else {
+        OrbitalDeviceLayout.orbitalRingSize()
+    }
+    val scaledRing = (baseRing.value * scale * position.avatarScale).dp
+
+    val visual = nodeVisualFor(ranked)
+    val opacity = when (mode) {
+        OrbitalSceneMode.Home -> OrbitalDeviceLayout.ringOpacity(ranked.device.confidence)
+        OrbitalSceneMode.Share -> {
+            val isActive = activeDeviceId == null || activeDeviceId == ranked.device.id
+            if (isActive) visual.opacity else 0.4f
+        }
+    }
+
+    val enabled = when (mode) {
+        OrbitalSceneMode.Home -> ranked.device.trustState != TrustState.BLOCKED
+        OrbitalSceneMode.Share -> visual.enabled &&
+            visual.state == AvatarTransferState.Idle &&
+            (activeDeviceId == null || activeDeviceId == ranked.device.id)
+    }
+
+    OrbitalDeviceNode(
+        ranked = ranked,
+        position = position,
+        widthPx = widthPx,
+        heightPx = heightPx,
+        density = density,
+        scaledRing = scaledRing,
+        opacity = opacity,
+        popInIndex = popInIndex,
+        reduceMotion = reduceMotion,
+        state = visual.state,
+        progress = visual.progress,
+        enabled = enabled,
+        onClick = { onDeviceClick(ranked) }
+    )
 }
 
 @Composable

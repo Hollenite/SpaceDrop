@@ -1,6 +1,7 @@
 package com.prototype.airdrop.core.mock
 
 import android.content.Context
+import com.prototype.airdrop.core.acoustic.AcousticListener
 import com.prototype.airdrop.core.connectivity.ble.BlePcScanner
 import com.prototype.airdrop.core.discovery.FusedNearbyDeviceRepository
 import com.prototype.airdrop.core.transfer.TcpTransferEngine
@@ -22,6 +23,7 @@ object AppDependencies {
 
     private var tcpTransferEngine: TcpTransferEngine? = null
     private var blePcScanner: BlePcScanner? = null
+    private var acousticListener: AcousticListener? = null
     private var fusedNearbyDeviceRepository: FusedNearbyDeviceRepository? = null
 
     fun tcpTransferEngine(context: Context): TcpTransferEngine {
@@ -36,11 +38,19 @@ object AppDependencies {
         }
     }
 
+    fun acousticListener(context: Context): AcousticListener {
+        val appContext = context.applicationContext
+        return acousticListener ?: AcousticListener(appContext).also {
+            acousticListener = it
+        }
+    }
+
     fun fusedNearbyDeviceRepository(context: Context): FusedNearbyDeviceRepository {
         val appContext = context.applicationContext
         return fusedNearbyDeviceRepository ?: FusedNearbyDeviceRepository(
             appContext,
-            blePcScanner(appContext)
+            blePcScanner(appContext),
+            acousticListener(appContext)
         ).also {
             fusedNearbyDeviceRepository = it
         }

@@ -72,6 +72,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 import androidx.lifecycle.viewmodel.compose.viewModel
 
+import com.prototype.airdrop.core.acoustic.AcousticPermissions
+
 import com.prototype.airdrop.core.connectivity.WifiPermissions
 
 import com.prototype.airdrop.core.connectivity.ble.BlePermissions
@@ -86,7 +88,7 @@ import com.prototype.airdrop.ui.components.EmptyNearbyDevicesState
 
 import com.prototype.airdrop.ui.components.GhostActionButton
 
-import com.prototype.airdrop.ui.components.ShareOrbitalLayout
+import com.prototype.airdrop.ui.components.NearbyDevicesRadar
 
 import kotlinx.coroutines.delay
 
@@ -169,6 +171,8 @@ fun DevicePickerScreen(
             if (!BlePermissions.hasAll(context)) addAll(BlePermissions.requiredPermissions())
 
             if (!WifiPermissions.hasAll(context)) addAll(WifiPermissions.requiredPermissions())
+
+            if (!AcousticPermissions.hasAll(context)) addAll(AcousticPermissions.requiredPermissions())
 
         }.distinct().toTypedArray()
 
@@ -292,46 +296,6 @@ fun DevicePickerScreen(
 
             when {
 
-                viewModel.multiFileWarning -> {
-
-                    Column(
-
-                        modifier = Modifier
-
-                            .fillMaxSize()
-
-                            .padding(24.dp),
-
-                        verticalArrangement = Arrangement.Center,
-
-                        horizontalAlignment = Alignment.CenterHorizontally
-
-                    ) {
-
-                        Text(
-
-                            text = "One file at a time",
-
-                            style = MaterialTheme.typography.titleMedium
-
-                        )
-
-                        Text(
-
-                            text = "SpaceDrop can send one file at a time in this version. Share a single file and try again.",
-
-                            style = MaterialTheme.typography.bodyMedium,
-
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-
-                            modifier = Modifier.padding(top = 8.dp)
-
-                        )
-
-                    }
-
-                }
-
                 isLoading && rankedDevices.isEmpty() -> {
 
                     Box(
@@ -366,19 +330,39 @@ fun DevicePickerScreen(
 
                 rankedDevices.isEmpty() -> {
 
-                    EmptyNearbyDevicesState(
+                    Column(modifier = Modifier.fillMaxSize()) {
 
-                        onScanQr = { viewModel.refresh() },
+                        NearbyDevicesRadar(
 
-                        onHowItWorks = { /* placeholder */ },
+                            rankedDevices = emptyList(),
 
-                        modifier = Modifier
+                            onDeviceClick = { },
 
-                            .fillMaxSize()
+                            compact = true,
 
-                            .padding(top = 32.dp)
+                            modifier = Modifier
 
-                    )
+                                .fillMaxWidth()
+
+                                .weight(0.4f)
+
+                        )
+
+                        EmptyNearbyDevicesState(
+
+                            onScanQr = { viewModel.refresh() },
+
+                            onHowItWorks = { viewModel.refresh() },
+
+                            modifier = Modifier
+
+                                .fillMaxWidth()
+
+                                .weight(0.6f)
+
+                        )
+
+                    }
 
                     errorMessage?.let { message ->
 
@@ -406,12 +390,13 @@ fun DevicePickerScreen(
 
                     Box(modifier = Modifier.fillMaxSize()) {
 
-                        ShareOrbitalLayout(
+                        HybridDevicePicker(
                             rankedDevices = rankedDevices,
-                            activeDeviceId = activeDeviceId,
-                            transferTargetId = session?.targetDevice?.id,
-                            transferStatus = session?.status,
                             transferProgress = session?.progressPercent ?: 0,
+                            avatarStateFor = { deviceId, progress ->
+                                viewModel.avatarState(deviceId, progress)
+                            },
+                            isDeviceEnabled = { deviceId -> viewModel.isDeviceEnabled(deviceId) },
                             onDeviceClick = { ranked -> viewModel.startTransfer(ranked.device) },
                             modifier = Modifier.fillMaxSize()
                         )
@@ -450,11 +435,7 @@ fun DevicePickerScreen(
 
                         if (session?.status == TransferStatus.SENDING) {
 
-                            GhostActionButton(
-
-                                text = "Cancel",
-
-                                onClick = { viewModel.cancelTransfer() },
+                            Column(
 
                                 modifier = Modifier
 
@@ -462,9 +443,45 @@ fun DevicePickerScreen(
 
                                     .fillMaxWidth()
 
-                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
 
-                            )
+                                horizontalAlignment = Alignment.CenterHorizontally
+
+                            ) {
+
+                                session?.let { s ->
+
+                                    if (s.totalFiles > 1) {
+
+                                        Text(
+
+                                            text = "Sending file ${s.currentFileIndex} of ${s.totalFiles}" +
+
+                                                (s.currentFileName?.let { " • $it" } ?: ""),
+
+                                            style = MaterialTheme.typography.labelMedium,
+
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+
+                                            modifier = Modifier.padding(bottom = 8.dp)
+
+                                        )
+
+                                    }
+
+                                }
+
+                                GhostActionButton(
+
+                                    text = "Cancel",
+
+                                    onClick = { viewModel.cancelTransfer() },
+
+                                    modifier = Modifier.fillMaxWidth()
+
+                                )
+
+                            }
 
                         }
 

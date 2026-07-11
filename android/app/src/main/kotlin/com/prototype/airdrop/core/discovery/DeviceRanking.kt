@@ -8,7 +8,9 @@ data class RankedNearbyDevice(
     val isPrimary: Boolean,
     /** 0 = most used, higher = less used. */
     val usageTier: Int,
-    val orbitIndex: Int
+    val orbitIndex: Int,
+    /** Successful transfers to this device; 0 = never used (new). */
+    val timesUsed: Int = 0
 )
 
 object DeviceRanking {
@@ -31,7 +33,8 @@ object DeviceRanking {
                 device = device,
                 isPrimary = device.id == primaryId,
                 usageTier = index,
-                orbitIndex = index
+                orbitIndex = index,
+                timesUsed = usageStore.getTransferCount(device.id)
             )
         }
     }

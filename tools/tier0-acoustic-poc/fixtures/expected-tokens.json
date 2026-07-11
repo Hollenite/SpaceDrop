@@ -1,0 +1,30 @@
+[
+  {
+    "file": "wav/clean-primary.wav",
+    "deviceId": "550e8400-e29b-41d4-a716-446655440000",
+    "epoch": 100,
+    "tokenHex": "0x5142E",
+    "shouldDecode": true
+  },
+  {
+    "file": "wav/clean-secondary.wav",
+    "deviceId": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "epoch": 0,
+    "tokenHex": "0x57FED",
+    "shouldDecode": true
+  },
+  {
+    "file": "wav/clean-rotated-epoch.wav",
+    "deviceId": "550e8400-e29b-41d4-a716-446655440000",
+    "epoch": 101,
+    "tokenHex": "0x087F1",
+    "shouldDecode": true
+  },
+  {
+    "file": "wav/bad-crc.wav",
+    "deviceId": "550e8400-e29b-41d4-a716-446655440000",
+    "epoch": 100,
+    "tokenHex": "0x5142E",
+    "shouldDecode": false
+  }
+]

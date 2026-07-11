@@ -1,5 +1,6 @@
 package com.prototype.airdrop.navigation
 
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
@@ -60,12 +61,20 @@ fun AppNavGraph(
         }
 
         composable(Routes.HOME) {
+            val context = LocalContext.current
             HomeScreen(
                 onDeviceNew = { deviceId ->
                     navController.navigate(Routes.pairing(deviceId, fromShare = false))
                 },
                 onSettings = { navController.navigate(Routes.SETTINGS) },
-                onShowQrPairing = { /* QR fallback placeholder */ }
+                onShowQrPairing = {
+                    // QR pairing/trust has no backend yet (out of scope) — be honest, not silent.
+                    Toast.makeText(
+                        context,
+                        "QR pairing isn't available yet — use the Share Sheet to send files",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             )
         }
 
@@ -148,7 +157,15 @@ fun AppNavGraph(
                         popUpTo(Routes.HOME) { inclusive = false }
                     }
                 },
-                onSendMore = { /* placeholder */ }
+                onSendMore = {
+                    // Start a fresh transfer: clear the finished session and return to discovery.
+                    AppState.clear()
+                    AppDependencies.transferEngine.reset()
+                    AppDependencies.tcpTransferEngine(context).reset()
+                    navController.navigate(Routes.HOME) {
+                        popUpTo(Routes.HOME) { inclusive = true }
+                    }
+                }
             )
         }
 

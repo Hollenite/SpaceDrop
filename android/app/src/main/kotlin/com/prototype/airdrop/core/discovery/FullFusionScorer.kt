@@ -10,10 +10,17 @@ object FullFusionScorer {
     private const val MIN_BLE_RSSI = -85
     private const val HIDE_BLE_ONLY_RSSI = -85
 
-    private const val WEIGHT_MDNS = 0.20f
-    private const val WEIGHT_AGREEMENT = 0.10f
-    private const val WEIGHT_BSSID = 0.25f
+    // Step 3 rebalance (see docs decisions log): acoustic corroboration is carved from the
+    // "confirm identity/room" family (mDNS / agreement / BSSID), not from raw BLE proximity, so
+    // signal ranking by distance is preserved. Max total stays 1.0:
+    //   BLE 0.35 + mDNS 0.15 + agreement 0.05 + BSSID 0.20 + host 0.10 + acoustic 0.15 = 1.00
+    private const val WEIGHT_MDNS = 0.15f
+    private const val WEIGHT_AGREEMENT = 0.05f
+    private const val WEIGHT_BSSID = 0.20f
     private const val WEIGHT_HOST = 0.10f
+
+    /** In-room physical corroboration: the candidate's device-id token was heard acoustically. */
+    private const val WEIGHT_ACOUSTIC = 0.15f
 
     fun score(
         candidate: MergedDiscoveryCandidate,
@@ -52,12 +59,22 @@ object FullFusionScorer {
         val host = candidate.host?.takeIf { it.isNotBlank() }
         val hostWeight = if (host != null) WEIGHT_HOST else 0f
 
+        // Acoustic is corroboration only: it can boost an existing BLE/mDNS candidate but never
+        // stands alone (a candidate only carries acousticTokenMatch after being merged from BLE/mDNS).
+        val acousticWeight =
+            if (candidate.acousticTokenMatch && (candidate.hasBle || candidate.hasMdns)) {
+                WEIGHT_ACOUSTIC
+            } else {
+                0f
+            }
+
         if (proximity == ProximityState.OFFLINE && candidate.hasMdns) {
             proximity = ProximityState.NEARBY
         }
 
-        val confidence = (bleRssiWeight + mdnsWeight + agreementWeight + bssidWeight + hostWeight)
-            .coerceAtMost(1f)
+        val confidence =
+            (bleRssiWeight + mdnsWeight + agreementWeight + bssidWeight + hostWeight + acousticWeight)
+                .coerceAtMost(1f)
 
         val signalSummary = buildString {
             if (candidate.hasBle) append("BLE")
@@ -68,6 +85,10 @@ object FullFusionScorer {
             if (bssidMatch) {
                 if (isNotEmpty()) append("+")
                 append("WiFi")
+            }
+            if (acousticWeight > 0f) {
+                if (isNotEmpty()) append("+")
+                append("Acoustic")
             }
             if (isEmpty()) append("none")
         }
@@ -89,10 +110,12 @@ object FullFusionScorer {
             agreementWeight = agreementWeight,
             bssidWeight = bssidWeight,
             hostWeight = hostWeight,
+            acousticWeight = acousticWeight,
             rssi = rssi,
             hasBle = candidate.hasBle,
             hasMdns = candidate.hasMdns,
             bssidMatch = bssidMatch,
+            acousticMatch = acousticWeight > 0f,
             signalSummary = signalSummary,
             phoneBssid = phoneBssid,
             pcBssid = candidate.pcBssid

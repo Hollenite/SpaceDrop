@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.prototype.airdrop.core.model.TransferItem
 import com.prototype.airdrop.core.model.TransferStatus
 import com.prototype.airdrop.core.util.ContentUriUtils
 import com.prototype.airdrop.ui.components.LiquidTransferProgressBar
@@ -53,19 +54,22 @@ fun TransferLabScreen(
     val context = LocalContext.current
 
     val filePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        val items = uris.mapNotNull { uri ->
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            val mime = context.contentResolver.getType(uri)
+            val name = ContentUriUtils.resolveDisplayName(context, uri, mime)
+            val size = context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
+            TransferItem(contentUri = uri, displayName = name, mimeType = mime, sizeBytes = size)
         }
-        val mime = context.contentResolver.getType(uri)
-        val name = ContentUriUtils.resolveDisplayName(context, uri, mime)
-        val size = context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
-        viewModel.setSelectedFile(uri, name, size, mime)
+        viewModel.setSelectedFiles(items)
     }
 
     Scaffold(
@@ -160,7 +164,7 @@ fun TransferLabScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             SecondaryActionButton(
-                text = "Choose file",
+                text = "Choose file(s)",
                 onClick = { filePicker.launch(arrayOf("*/*")) },
                 enabled = !viewModel.isTransferring,
                 modifier = Modifier.fillMaxWidth()
@@ -183,6 +187,18 @@ fun TransferLabScreen(
                 isComplete = session?.status == TransferStatus.COMPLETED,
                 modifier = Modifier.fillMaxWidth()
             )
+
+            session?.takeIf { it.status == TransferStatus.SENDING && it.totalFiles > 1 }?.let { s ->
+                Text(
+                    text = "File ${s.currentFileIndex} of ${s.totalFiles}" +
+                        (s.currentFileName?.let { " • $it" } ?: ""),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                )
+            }
 
             session?.speedText?.takeIf { it.isNotEmpty() }?.let { speed ->
                 Text(

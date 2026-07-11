@@ -3,6 +3,7 @@ package com.prototype.airdrop.core.transfer
 import android.content.ContentResolver
 import android.content.Context
 import com.prototype.airdrop.core.connectivity.DeviceIdStore
+import com.prototype.airdrop.core.connectivity.DeviceNameStore
 import com.prototype.airdrop.core.connectivity.SpaceDropFileSender
 import com.prototype.airdrop.core.connectivity.SpaceDropHandshakeClient
 import com.prototype.airdrop.core.model.NearbyDevice
@@ -21,7 +22,11 @@ import java.util.UUID
 class TcpTransferEngine(context: Context) : TransferEngine {
 
     private val appContext = context.applicationContext
-    private val fileSender = SpaceDropFileSender(DeviceIdStore(appContext))
+    private val deviceNameStore = DeviceNameStore(appContext)
+    private val fileSender = SpaceDropFileSender(
+        DeviceIdStore(appContext),
+        deviceNameProvider = { deviceNameStore.getName() }
+    )
     private val scope = CoroutineScope(Dispatchers.IO)
     private var transferJob: Job? = null
 
@@ -48,12 +53,7 @@ class TcpTransferEngine(context: Context) : TransferEngine {
             _session.value = failedSession(device, items, "No files to send")
             return
         }
-        if (items.size > 1) {
-            _session.value = failedSession(device, items, "One file at a time in this version")
-            return
-        }
 
-        val item = items.first()
         val sessionId = UUID.randomUUID().toString()
         _session.value = TransferSession(
             id = sessionId,
@@ -61,20 +61,26 @@ class TcpTransferEngine(context: Context) : TransferEngine {
             items = items,
             status = TransferStatus.SENDING,
             progressPercent = 0,
-            speedText = ""
+            speedText = "",
+            totalFiles = items.size,
+            currentFileIndex = 1,
+            currentFileName = items.first().displayName
         )
 
         transferJob = scope.launch {
-            val result = fileSender.sendFile(
+            val result = fileSender.sendFiles(
                 host = host,
                 port = device.port,
-                item = item,
+                items = items,
                 contentResolver = contentResolver,
                 onProgress = { update ->
                     _session.value = _session.value?.copy(
                         status = TransferStatus.SENDING,
                         progressPercent = update.progressPercent,
-                        speedText = update.speedText
+                        speedText = update.speedText,
+                        totalFiles = update.fileCount,
+                        currentFileIndex = update.fileIndex + 1,
+                        currentFileName = update.fileName
                     )
                 }
             )

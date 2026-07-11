@@ -1,6 +1,7 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using SpaceDrop.AcousticFsk;
 
 namespace SpaceDrop.AcousticEmitter;
 
@@ -49,6 +50,7 @@ internal static class Program
                 EmitterMode.Continuous => RunContinuous(options, outputDevice, cts.Token),
                 EmitterMode.Burst => RunBurst(options, outputDevice, cts.Token),
                 EmitterMode.Sweep => RunSweep(options, outputDevice, cts.Token),
+                EmitterMode.Fsk => RunFsk(options, outputDevice, cts.Token),
                 _ => 1
             };
         }
@@ -61,14 +63,14 @@ internal static class Program
 
     private static int RunContinuous(EmitterOptions options, MMDevice outputDevice, CancellationToken cancellationToken)
     {
-        using var playback = CreatePlayback(options.FrequencyHz, options.Amplitude, options.SampleRate, outputDevice);
+        using var playback = CreateTonePlayback(options.FrequencyHz, options.Amplitude, options.SampleRate, outputDevice);
         MaybeWriteWavReference(options, options.FrequencyHz, options.DurationSec);
 
-        playback.Play();
+        playback.Output.Play();
         WaitForDuration(options.DurationSec, cancellationToken, () =>
             LogLevel(options.FrequencyHz, options.Amplitude, on: true));
 
-        playback.Stop();
+        playback.Output.Stop();
         return 0;
     }
 
@@ -78,20 +80,103 @@ internal static class Program
             ? DateTime.MaxValue
             : DateTime.UtcNow.AddSeconds(options.DurationSec);
 
-        using var playback = CreatePlayback(options.FrequencyHz, options.Amplitude, options.SampleRate, outputDevice);
+        var expectedBursts = EstimateBurstCount(options.DurationSec);
+        var burstIndex = 0;
 
-        while (DateTime.UtcNow < endAt && !cancellationToken.IsCancellationRequested)
+        using var playback = CreateTonePlayback(options.FrequencyHz, options.Amplitude, options.SampleRate, outputDevice);
+        playback.Output.Play();
+
+        try
         {
-            playback.Play();
-            LogLevel(options.FrequencyHz, options.Amplitude, on: true);
-            SleepSeconds(BurstOnSec, cancellationToken);
+            while (DateTime.UtcNow < endAt && !cancellationToken.IsCancellationRequested)
+            {
+                burstIndex++;
+                var onAt = DateTime.UtcNow;
+                playback.Generator.Gain = options.Amplitude;
+                LogLevel(options.FrequencyHz, options.Amplitude, on: true, burstIndex, expectedBursts);
+                SleepUntil(onAt.AddSeconds(BurstOnSec), cancellationToken);
 
-            playback.Stop();
-            LogLevel(options.FrequencyHz, options.Amplitude, on: false);
-            SleepSeconds(BurstOffSec, cancellationToken);
+                playback.Generator.Gain = 0;
+                LogLevel(options.FrequencyHz, options.Amplitude, on: false, burstIndex, expectedBursts);
+                SleepUntil(onAt.AddSeconds(BurstOnSec + BurstOffSec), cancellationToken);
+            }
+        }
+        finally
+        {
+            playback.Generator.Gain = 0;
+            playback.Output.Stop();
         }
 
-        playback.Stop();
+        return 0;
+    }
+
+    private static int EstimateBurstCount(int durationSec)
+    {
+        if (durationSec <= 0)
+        {
+            return 0;
+        }
+
+        var cycleSec = BurstOnSec + BurstOffSec;
+        return (int)Math.Ceiling(durationSec / cycleSec);
+    }
+
+    private static int RunFsk(EmitterOptions options, MMDevice outputDevice, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(options.DeviceId))
+        {
+            throw new ArgumentException("--device-id is required for --mode fsk");
+        }
+
+        var epoch = options.Epoch ?? AcousticToken.EpochFromUnixSeconds(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var encoder = new FskEncoder(options.SampleRate, options.Amplitude);
+        var frame = encoder.EncodeFrameWithGap(options.DeviceId!, epoch, gapMs: FskProtocol.InterFrameGapMs);
+        var token = AcousticToken.ComputeToken20(options.DeviceId!, epoch);
+
+        if (!string.IsNullOrWhiteSpace(options.WavPath))
+        {
+            File.WriteAllBytes(options.WavPath!, WavIo.WriteMonoPcm16(frame, options.SampleRate));
+            Console.WriteLine($"FSK WAV saved: {options.WavPath} token={AcousticToken.TokenHex(token)} epoch={epoch}");
+        }
+
+        var frameDurationSec = (double)frame.Length / options.SampleRate;
+        Console.WriteLine(
+            $"FSK frame token={AcousticToken.TokenHex(token)} epoch={epoch} device={options.DeviceId} " +
+            $"duration={frameDurationSec:F2}s (loop)");
+
+        var endAt = options.DurationSec <= 0
+            ? DateTime.MaxValue
+            : DateTime.UtcNow.AddSeconds(options.DurationSec);
+
+        var provider = new FskLoopWaveProvider(frame, options.SampleRate);
+        using var wasapiOut = new WasapiOut(outputDevice, AudioClientShareMode.Shared, true, 50);
+        wasapiOut.Init(provider);
+        wasapiOut.Play();
+
+        var frameIndex = 0;
+        var nextLogAt = DateTime.UtcNow;
+
+        try
+        {
+            while (DateTime.UtcNow < endAt && !cancellationToken.IsCancellationRequested)
+            {
+                if (DateTime.UtcNow >= nextLogAt)
+                {
+                    frameIndex++;
+                    Console.WriteLine(
+                        $"[{DateTime.Now:HH:mm:ss.fff}] FSK loop frame ~{frameIndex} " +
+                        $"token={AcousticToken.TokenHex(token)} epoch={epoch}");
+                    nextLogAt = nextLogAt.AddSeconds(frameDurationSec);
+                }
+
+                Thread.Sleep(50);
+            }
+        }
+        finally
+        {
+            wasapiOut.Stop();
+        }
+
         return 0;
     }
 
@@ -115,16 +200,20 @@ internal static class Program
             }
 
             Console.WriteLine($"Sweep step: {freq:F0} Hz ({SweepDwellSec}s)");
-            using var playback = CreatePlayback(freq, options.Amplitude, options.SampleRate, outputDevice);
-            playback.Play();
+            using var playback = CreateTonePlayback(freq, options.Amplitude, options.SampleRate, outputDevice);
+            playback.Output.Play();
             SleepSeconds(SweepDwellSec, cancellationToken);
-            playback.Stop();
+            playback.Output.Stop();
         }
 
         return 0;
     }
 
-    private static WasapiOut CreatePlayback(double frequencyHz, double amplitude, int sampleRate, MMDevice outputDevice)
+    private static TonePlayback CreateTonePlayback(
+        double frequencyHz,
+        double amplitude,
+        int sampleRate,
+        MMDevice outputDevice)
     {
         var generator = new SignalGenerator(sampleRate, 1)
         {
@@ -135,7 +224,32 @@ internal static class Program
 
         var wasapiOut = new WasapiOut(outputDevice, AudioClientShareMode.Shared, true, 50);
         wasapiOut.Init(generator);
-        return wasapiOut;
+        return new TonePlayback(generator, wasapiOut);
+    }
+
+    private static PcmPlayback CreatePcmPlayback(short[] samples, int sampleRate, MMDevice outputDevice)
+    {
+        var provider = new ShortPcmWaveProvider(samples, sampleRate);
+        var wasapiOut = new WasapiOut(outputDevice, AudioClientShareMode.Shared, true, 50);
+        wasapiOut.Init(provider);
+        return new PcmPlayback(wasapiOut);
+    }
+
+    private static void SleepUntil(DateTime endAt, CancellationToken cancellationToken)
+    {
+        while (DateTime.UtcNow < endAt && !cancellationToken.IsCancellationRequested)
+        {
+            var remaining = endAt - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            var wait = remaining > TimeSpan.FromMilliseconds(50)
+                ? TimeSpan.FromMilliseconds(50)
+                : remaining;
+            Task.Delay(wait, cancellationToken).Wait(cancellationToken);
+        }
     }
 
     private static void MaybeWriteWavReference(EmitterOptions options, double frequencyHz, int durationSec)
@@ -198,10 +312,21 @@ internal static class Program
         Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken).Wait(cancellationToken);
     }
 
-    private static void LogLevel(double frequencyHz, double amplitude, bool on)
+    private static void LogLevel(
+        double frequencyHz,
+        double amplitude,
+        bool on,
+        int burstIndex = 0,
+        int expectedBursts = 0)
     {
         var state = on ? "ON " : "OFF";
-        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {state} {frequencyHz:F0} Hz gain={amplitude:F2}");
+        var burstSuffix = burstIndex > 0 && expectedBursts > 0
+            ? $"  Burst {burstIndex}/{expectedBursts}"
+            : burstIndex > 0
+                ? $"  Burst {burstIndex}"
+                : string.Empty;
+        Console.WriteLine(
+            $"[{DateTime.Now:HH:mm:ss.fff}] {state} {frequencyHz:F0} Hz gain={amplitude:F2}{burstSuffix}");
     }
 
     private static void PrintHelp()
@@ -214,7 +339,9 @@ internal static class Program
 
             Options:
               --freq <Hz>           Target frequency (default 19000)
-              --mode <name>         continuous | burst | sweep (default continuous)
+              --mode <name>         continuous | burst | sweep | fsk (default continuous)
+              --device-id <uuid>    Required for fsk mode
+              --epoch <n>           FSK token epoch (default: floor(unix/30))
               --duration <sec>      Run time (default 60; 0 = until Ctrl+C)
               --amplitude <0-1>     Peak gain (default 0.4)
               --sample-rate <Hz>    44100 or 48000 (default 44100)
@@ -231,11 +358,27 @@ internal static class Program
     }
 }
 
+internal sealed class TonePlayback(SignalGenerator generator, WasapiOut output) : IDisposable
+{
+    public SignalGenerator Generator { get; } = generator;
+    public WasapiOut Output { get; } = output;
+
+    public void Dispose() => Output.Dispose();
+}
+
+internal sealed class PcmPlayback(WasapiOut output) : IDisposable
+{
+    public WasapiOut Output { get; } = output;
+
+    public void Dispose() => Output.Dispose();
+}
+
 internal enum EmitterMode
 {
     Continuous,
     Burst,
-    Sweep
+    Sweep,
+    Fsk
 }
 
 internal sealed class EmitterOptions
@@ -251,6 +394,8 @@ internal sealed class EmitterOptions
     public int? DeviceIndex { get; set; }
     public string? DeviceName { get; set; }
     public bool UseWindowsDefault { get; set; }
+    public string? DeviceId { get; set; }
+    public int? Epoch { get; set; }
 
     public static EmitterOptions Parse(string[] args)
     {
@@ -294,6 +439,12 @@ internal sealed class EmitterOptions
                 case "--wav":
                     options.WavPath = NextArg(args, ref i);
                     break;
+                case "--device-id":
+                    options.DeviceId = NextArg(args, ref i);
+                    break;
+                case "--epoch":
+                    options.Epoch = ParseInt(NextArg(args, ref i), "--epoch");
+                    break;
                 default:
                     throw new ArgumentException($"Unknown argument: {arg}");
             }
@@ -333,6 +484,7 @@ internal sealed class EmitterOptions
         "continuous" => EmitterMode.Continuous,
         "burst" => EmitterMode.Burst,
         "sweep" => EmitterMode.Sweep,
-        _ => throw new ArgumentException($"Unknown mode: {value}. Use continuous, burst, or sweep.")
+        "fsk" => EmitterMode.Fsk,
+        _ => throw new ArgumentException($"Unknown mode: {value}. Use continuous, burst, sweep, or fsk.")
     };
 }

@@ -66,6 +66,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 import androidx.lifecycle.viewmodel.compose.viewModel
 
+import com.prototype.airdrop.core.acoustic.AcousticPermissions
+
 import com.prototype.airdrop.core.connectivity.WifiPermissions
 
 import com.prototype.airdrop.core.connectivity.ble.BlePermissions
@@ -123,6 +125,8 @@ fun BleDiscoveryLabScreen(
             if (!BlePermissions.hasAll(context)) addAll(BlePermissions.requiredPermissions())
 
             if (!WifiPermissions.hasAll(context)) addAll(WifiPermissions.requiredPermissions())
+
+            if (!AcousticPermissions.hasAll(context)) addAll(AcousticPermissions.requiredPermissions())
 
         }.distinct().toTypedArray()
 
@@ -308,6 +312,8 @@ fun BleDiscoveryLabScreen(
 
                         SignalChip("WiFi", fusion.bssidMatch, SpaceDropColors.Success)
 
+                        SignalChip("Acoustic", fusion.acousticMatch, SpaceDropColors.Success)
+
                     }
 
 
@@ -346,7 +352,7 @@ fun BleDiscoveryLabScreen(
 
                                     "wAgree=${fusion.agreementWeight} wBssid=${fusion.bssidWeight} " +
 
-                                    "wHost=${fusion.hostWeight}"
+                                    "wHost=${fusion.hostWeight} wAcoustic=${fusion.acousticWeight}"
 
                             )
 

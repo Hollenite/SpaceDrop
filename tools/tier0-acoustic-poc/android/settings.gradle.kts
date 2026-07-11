@@ -22,3 +22,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "AcousticPoc"
 include(":app")
+include(":fsk-core")
+project(":fsk-core").projectDir = file("../kotlin/fsk-core")
